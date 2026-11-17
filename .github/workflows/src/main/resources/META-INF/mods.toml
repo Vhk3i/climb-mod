@@ -6,4 +6,5 @@ license="MIT"
 modId="realisticclimbing"
 version="1.0.0"
 displayName="Realistic Climbing Simulator"
-description="4-Limb Physics Climbing Simulator with IK rendering and Balance"
+authors="Victor"
+description='''4-Limb Physics Climbing Simulator with IK and Balance'''
