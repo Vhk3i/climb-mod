@@ -23,7 +23,7 @@ jobs:
           gradle-version: '8.4'
 
       - name: Build Mod JAR
-        run: gradle build --no-daemon
+        run: gradle build --stacktrace --no-daemon
 
       - name: Upload Compiled JAR
         uses: actions/upload-artifact@v4
