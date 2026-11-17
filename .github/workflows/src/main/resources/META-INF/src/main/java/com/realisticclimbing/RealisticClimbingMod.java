@@ -9,7 +9,6 @@ import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
@@ -36,18 +35,16 @@ import org.lwjgl.glfw.GLFW;
 public class RealisticClimbingMod {
     public static final String MOD_ID = "realisticclimbing";
 
-    // Клавиши управления 4 отдельными конечностями и режимом скалолазания
     public static KeyMapping KEY_TOGGLE_CLIMB;
-    public static KeyMapping KEY_LEFT_HAND;   // Q - переставить левую руку туда, куда смотришь
-    public static KeyMapping KEY_RIGHT_HAND;  // E - переставить правую руку
-    public static KeyMapping KEY_LEFT_FOOT;   // Z - переставить левую ногу
-    public static KeyMapping KEY_RIGHT_FOOT;  // C - переставить правую ногу
+    public static KeyMapping KEY_LEFT_HAND;
+    public static KeyMapping KEY_RIGHT_HAND;
+    public static KeyMapping KEY_LEFT_FOOT;
+    public static KeyMapping KEY_RIGHT_FOOT;
 
     public static boolean climbingActive = false;
     public static float stamina = 100.0f;
     public static float stability = 1.0f;
 
-    // 4 независимые конечности: 0 - Л.Рука, 1 - П.Рука, 2 - Л.Нога, 3 - П.Нога
     public static class Limb {
         public final String name;
         public final boolean isHand;
@@ -105,12 +102,12 @@ public class RealisticClimbingMod {
                 if (!climbingActive) {
                     if (tryEngageWall(player)) {
                         climbingActive = true;
-                        player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Управление конечностями: Q (Л.Рука), E (П.Рука), Z (Л.Нога), C (П.Нога)"), true);
+                        player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E - Руки, Z/C - Ноги"), true);
                     } else {
                         player.displayClientMessage(Component.literal("§c[Climbing] Подойди вплотную к стене!"), true);
                     }
                 } else {
-                    disengageClimb(player, "Вы отпустили стену");
+                    disengageClimb(player, "§eВы отпустили стену");
                 }
             }
 
@@ -119,13 +116,11 @@ public class RealisticClimbingMod {
                 return;
             }
 
-            // Обработка независимого перемещения конечностей по взгляду игрока (Raycast до выступа)
             handleLimbInput(player, 0, KEY_LEFT_HAND);
             handleLimbInput(player, 1, KEY_RIGHT_HAND);
             handleLimbInput(player, 2, KEY_LEFT_FOOT);
             handleLimbInput(player, 3, KEY_RIGHT_FOOT);
 
-            // Плавная интерполяция движения конечностей и расчёт двухзвенного IK (локти и колени)
             int lockedCount = 0;
             int handsLocked = 0;
             Vec3 centerOfSupport = Vec3.ZERO;
@@ -134,12 +129,9 @@ public class RealisticClimbingMod {
                 Limb limb = LIMBS[i];
                 limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.35);
 
-                // Расчёт корневого сустава (плечо или бедро)
                 Vec3 rootPos = getJointRoot(player, limb);
-                // Двухзвенный IK: вычисляем положение локтя или колена с естественным сгибом
                 limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
 
-                // Если конечность растянулась слишком далеко (> 1.65 блока), она срывается с зацепа
                 if (limb.locked && rootPos.distanceTo(limb.currentPos) > 1.65) {
                     limb.locked = false;
                     player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась из-за натяжения!"), true);
@@ -152,7 +144,6 @@ public class RealisticClimbingMod {
                 }
             }
 
-            // Проверка потери равновесия и срыва
             if (lockedCount < 2 || handsLocked == 0) {
                 disengageClimb(player, "§c[СРЫВ!] Потеря опоры — слишком мало точек захвата!");
                 return;
@@ -160,7 +151,6 @@ public class RealisticClimbingMod {
 
             centerOfSupport = centerOfSupport.scale(1.0 / lockedCount);
 
-            // Расчёт баланса и выносливости
             stability = Mth.clamp((lockedCount / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f), 0.0f, 1.0f);
             float drain = (4 - lockedCount) * 0.18f + 0.04f;
             stamina = Math.max(0.0f, stamina - drain);
@@ -170,16 +160,12 @@ public class RealisticClimbingMod {
                 return;
             }
 
-            // Физика тела: притягивание центра тяжести (таза) к среднему полигону зацепов конечностей
             Vec3 lookDir = Vec3.directionFromRotation(0, player.getYRot());
             Vec3 idealBodyPos = centerOfSupport.subtract(lookDir.scale(0.45)).add(0, -0.85, 0);
 
-            // Смещение корпуса клавишами WASD (перенос веса тела без перехвата рук)
             Vec3 sideDir = lookDir.cross(new Vec3(0, 1, 0)).normalize();
             double swayUp = (player.zza * 0.18);
             double swaySide = (-player.xxa * 0.18);
-
-            // Небольшое физическое покачивание тела при усталости
             double fatigueSway = (stamina < 35f) ? Math.sin(player.tickCount * 0.4) * 0.03 : 0.0;
 
             Vec3 desiredPelvis = idealBodyPos.add(sideDir.scale(swaySide)).add(0, swayUp + fatigueSway, 0);
@@ -188,7 +174,6 @@ public class RealisticClimbingMod {
             player.setDeltaMovement(velocity);
             player.fallDistance = 0.0f;
 
-            // Отображение телеметрии (Стамина и Баланс) над хотбаром
             if (player.tickCount % 5 == 0) {
                 String bar = String.format("§6Стамина: %.0f%% §7| §bБаланс: %.0f%% §7| §aОпор: %d/4",
                         stamina, stability * 100f, lockedCount);
@@ -199,7 +184,6 @@ public class RealisticClimbingMod {
         private static void handleLimbInput(Player player, int index, KeyMapping key) {
             Limb limb = LIMBS[index];
             if (key.isDown()) {
-                // Ищем точку захвата на стене по направлению взгляда
                 Vec3 eye = player.getEyePosition();
                 Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
                 BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
@@ -208,7 +192,6 @@ public class RealisticClimbingMod {
                     Vec3 gripPoint = hit.getLocation();
                     Vec3 root = getJointRoot(player, limb);
                     if (root.distanceTo(gripPoint) <= 1.55) {
-                        limb.locked = false; // В процессе переноса конечность не держит вес
                         limb.targetPos = gripPoint;
                         BlockState state = player.level().getBlockState(hit.getBlockPos());
                         limb.gripQuality = state.getBlock().getFriction();
@@ -228,7 +211,6 @@ public class RealisticClimbingMod {
             Vec3 wallHit = hit.getLocation();
             Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
 
-            // Расставляем 4 конечности по стартовым точкам захвата на стене
             LIMBS[0].targetPos = LIMBS[0].currentPos = wallHit.add(right.scale(-0.35)).add(0, 0.25, 0);
             LIMBS[1].targetPos = LIMBS[1].currentPos = wallHit.add(right.scale(0.35)).add(0, 0.25, 0);
             LIMBS[2].targetPos = LIMBS[2].currentPos = wallHit.add(right.scale(-0.25)).add(0, -0.75, 0);
@@ -254,7 +236,6 @@ public class RealisticClimbingMod {
             return player.position().add(right.scale(sideOffset)).add(0, heightOffset, 0);
         }
 
-        // Двухзвенный аналитический IK-солвер: вычисляет 3D-координату сгиба локтя/колена
         private static Vec3 solveTwoBoneIK(Vec3 root, Vec3 target, boolean isHand, boolean isLeft) {
             double boneLen = isHand ? 0.42 : 0.46;
             Vec3 diff = target.subtract(root);
@@ -262,12 +243,10 @@ public class RealisticClimbingMod {
             Vec3 midPoint = root.add(diff.scale(0.5));
 
             double bendAmount = Math.sqrt(Math.max(0.0, boneLen * boneLen - (dist * 0.5) * (dist * 0.5)));
-            // Локти сгибаются наружу и вниз, колени — вперёд и чуть вбок
             Vec3 bendDir = new Vec3(isLeft ? -0.35 : 0.35, isHand ? -0.85 : 0.4, 0.35).normalize();
             return midPoint.add(bendDir.scale(bendAmount));
         }
 
-        // Применение углов IK к 3D-модели персонажа от третьего лица (F5)
         @SubscribeEvent
         public static void onRenderPlayerPost(RenderPlayerEvent.Pre event) {
             if (!climbingActive || event.getEntity() != Minecraft.getInstance().player) return;
@@ -286,7 +265,6 @@ public class RealisticClimbingMod {
             part.zRot = (float) (limb.isLeft ? -0.25f : 0.25f);
         }
 
-        // Отрисовка 3D-точек захвата (зацепов) и сегментов IK-суставов в реальном времени
         @SubscribeEvent
         public static void onRenderWorld(RenderLevelStageEvent event) {
             if (!climbingActive || event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
@@ -307,13 +285,11 @@ public class RealisticClimbingMod {
                 float g = limb.locked ? 0.95f : 0.2f;
                 float b = limb.isHand ? 0.95f : 0.3f;
 
-                // Бокс точки захвата на стене
-                AABB gripBox = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
-                LevelRenderer.renderLineBox(poseStack, builder, gripBox, r, g, b, 1.0f);
+                AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
+                LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
 
-                // Отрисовка двухзвенного сустава (Плечо -> Локоть -> Кисть)
-                AABB jointBox = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
-                LevelRenderer.renderLineBox(poseStack, builder, jointBox, 1.0f, 0.8f, 0.1f, 0.9f);
+                AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
+                LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
             }
 
             poseStack.popPose();
