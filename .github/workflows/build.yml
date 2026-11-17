@@ -377,4 +377,24 @@ jobs:
                           float g = limb.locked ? 0.95f : 0.2f;
                           float b = limb.isHand ? 0.95f : 0.3f;
 
-                          AABB grip = new AABB(limb.currentPos,
+                          AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
+                          LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
+
+                          AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
+                          LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+                      }
+
+                      poseStack.popPose();
+                      buffer.endBatch(RenderType.lines());
+                  }
+              }
+          }
+          EOF
+
+          gradle build --no-daemon --stacktrace
+
+      - name: Upload Compiled JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealisticClimbing-1.20.1-Mod
+          path: mod_build/build/libs/*.jar
