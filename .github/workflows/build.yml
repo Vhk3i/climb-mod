@@ -39,7 +39,7 @@ jobs:
               id 'net.minecraftforge.gradle' version '[6.0,6.2)'
           }
 
-          version = '1.0.0'
+          version = '1.2.0'
           group = 'com.realisticclimbing'
           base {
               archivesName = 'realisticclimbing-1.20.1'
@@ -75,9 +75,9 @@ jobs:
           license="MIT"
           [[mods]]
           modId="realisticclimbing"
-          version="1.0.0"
+          version="1.2.0"
           displayName="Realistic Climbing Simulator"
-          description="4-Limb Physics Climbing Simulator with IK and Balance"
+          description="4-Limb Physics Climbing Simulator with IK, Wind, Altitude Pressure, Chalk and Piton Rope Belay"
           EOF
 
           cat << 'EOF' > src/main/resources/pack.mcmeta
@@ -101,11 +101,16 @@ jobs:
           import net.minecraft.client.renderer.LevelRenderer;
           import net.minecraft.client.renderer.MultiBufferSource;
           import net.minecraft.client.renderer.RenderType;
+          import net.minecraft.core.BlockPos;
           import net.minecraft.core.Direction;
+          import net.minecraft.core.particles.ParticleTypes;
           import net.minecraft.network.chat.Component;
+          import net.minecraft.sounds.SoundEvents;
           import net.minecraft.util.Mth;
           import net.minecraft.world.entity.player.Player;
           import net.minecraft.world.level.ClipContext;
+          import net.minecraft.world.level.Level;
+          import net.minecraft.world.level.LightLayer;
           import net.minecraft.world.level.block.state.BlockState;
           import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.BlockHitResult;
@@ -123,6 +128,9 @@ jobs:
           import net.minecraftforge.fml.loading.FMLEnvironment;
           import org.lwjgl.glfw.GLFW;
 
+          import java.util.ArrayList;
+          import java.util.List;
+
           @Mod("realisticclimbing")
           public class RealisticClimbingMod {
               public static final String MOD_ID = "realisticclimbing";
@@ -132,10 +140,30 @@ jobs:
               public static KeyMapping KEY_RIGHT_HAND;
               public static KeyMapping KEY_LEFT_FOOT;
               public static KeyMapping KEY_RIGHT_FOOT;
+              public static KeyMapping KEY_USE_CHALK;   // G - Нанести магнезию на руки
+              public static KeyMapping KEY_PLACE_PITON; // V - Забить страховочный крюк
 
               public static boolean climbingActive = false;
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
+
+              // Система магнезии (сухость и трение ладоней: от 0 до 100%)
+              public static float chalkLevel = 100.0f;
+              public static int chalkUsesLeft = 8;
+
+              // Система страховочных крючьев (шлямбуров) и веревки
+              public static final List<Vec3> PLACED_PITONS = new ArrayList<>();
+              public static int pitonsLeft = 5;
+              public static boolean hangingOnRope = false;
+              public static double maxRopeSlack = 3.8; // Свободный ход веревки до срабатывания страховки
+
+              // Система ветра и атмосферного давления
+              public static Vec3 currentWind = Vec3.ZERO;
+              public static float windSpeed = 0.0f;
+              public static float pressureKPa = 101.3f;
+              public static float hypoxiaFactor = 0.0f;
+              public static int gustTimer = 0;
+              public static boolean isGusting = false;
 
               public static class Limb {
                   public final String name;
@@ -175,12 +203,16 @@ jobs:
                       KEY_RIGHT_HAND = new KeyMapping("Перехват: Правая рука", GLFW.GLFW_KEY_E, "Realistic Climbing");
                       KEY_LEFT_FOOT = new KeyMapping("Опора: Левая нога", GLFW.GLFW_KEY_Z, "Realistic Climbing");
                       KEY_RIGHT_FOOT = new KeyMapping("Опора: Правая нога", GLFW.GLFW_KEY_C, "Realistic Climbing");
+                      KEY_USE_CHALK = new KeyMapping("Нанести магнезию (Мел)", GLFW.GLFW_KEY_G, "Realistic Climbing");
+                      KEY_PLACE_PITON = new KeyMapping("Забить страховочный крюк", GLFW.GLFW_KEY_V, "Realistic Climbing");
 
                       event.register(KEY_TOGGLE_CLIMB);
                       event.register(KEY_LEFT_HAND);
                       event.register(KEY_RIGHT_HAND);
                       event.register(KEY_LEFT_FOOT);
                       event.register(KEY_RIGHT_FOOT);
+                      event.register(KEY_USE_CHALK);
+                      event.register(KEY_PLACE_PITON);
                   }
 
                   @SubscribeEvent
@@ -190,21 +222,48 @@ jobs:
                       Minecraft mc = Minecraft.getInstance();
                       if (player != mc.player) return;
 
+                      updateAtmosphereAndWind(player);
+
+                      // Если игрок твердо стоит на земле и не лезет — пополняем снаряжение и снимаем старую веревку
+                      if (player.onGround() && !climbingActive) {
+                          if (!PLACED_PITONS.isEmpty() || pitonsLeft < 5 || chalkUsesLeft < 8) {
+                              PLACED_PITONS.clear();
+                              pitonsLeft = 5;
+                              chalkUsesLeft = 8;
+                              hangingOnRope = false;
+                          }
+                      }
+
+                      // Обработка клавиши G (Магнезия для рук)
+                      while (KEY_USE_CHALK.consumeClick()) {
+                          useChalk(player);
+                      }
+
+                      // Обработка клавиши V (Забить страховочный крюк в скалу)
+                      while (KEY_PLACE_PITON.consumeClick()) {
+                          placePiton(player);
+                      }
+
+                      // Обработка клавиши R (Вход/выход из режима лазания)
                       while (KEY_TOGGLE_CLIMB.consumeClick()) {
                           if (!climbingActive) {
                               if (tryEngageWall(player)) {
                                   climbingActive = true;
-                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E - Руки, Z/C - Ноги"), true);
+                                  hangingOnRope = false;
+                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E/Z/C - Конечности | G - Магнезия | V - Крюк"), true);
                               } else {
-                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди вплотную к стене!"), true);
+                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди ближе к стене!"), true);
                               }
                           } else {
                               disengageClimb(player, "§eВы отпустили стену");
                           }
                       }
 
+                      // Если игрок сорвался или отпустил стену, проверяем работу страховочной веревки
                       if (!climbingActive) {
-                          stamina = Math.min(100.0f, stamina + 0.4f);
+                          float recoveryRate = 0.45f * (1.0f - hypoxiaFactor * 0.60f);
+                          stamina = Math.min(100.0f, stamina + recoveryRate);
+                          updateRopeArrestPhysics(player);
                           return;
                       }
 
@@ -213,9 +272,17 @@ jobs:
                       handleLimbInput(player, 2, KEY_LEFT_FOOT);
                       handleLimbInput(player, 3, KEY_RIGHT_FOOT);
 
+                      // Стирание магнезии со временем (в дождь и при нагрузке руки потеют/намокают быстрее)
+                      float sweatRate = player.level().isRaining() ? 0.22f : 0.07f;
+                      chalkLevel = Math.max(0.0f, chalkLevel - sweatRate);
+
                       int lockedCount = 0;
                       int handsLocked = 0;
                       Vec3 centerOfSupport = Vec3.ZERO;
+
+                      // Магнезия увеличивает надежность удержания при растяжении
+                      double chalkBonus = (chalkLevel / 100.0) * 0.12;
+                      double maxStretchDist = 1.62 - (hypoxiaFactor * 0.22) + chalkBonus;
 
                       for (int i = 0; i < 4; i++) {
                           Limb limb = LIMBS[i];
@@ -224,9 +291,17 @@ jobs:
                           Vec3 rootPos = getJointRoot(player, limb);
                           limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
 
-                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > 1.65) {
+                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > maxStretchDist) {
                               limb.locked = false;
-                              player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась из-за натяжения!"), true);
+                              player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась от натяжения!"), true);
+                          }
+
+                          // Если магнезия стерлась (<15%) и дует ветер, есть риск соскальзывания ладони
+                          if (limb.locked && limb.isHand && chalkLevel < 15.0f && windSpeed > 12.0f) {
+                              if (player.level().random.nextFloat() < 0.008f) {
+                                  limb.locked = false;
+                                  player.displayClientMessage(Component.literal("§c[!] Скользкие руки! " + limb.name + " соскользнула (нажми G для магнезии)!"), true);
+                              }
                           }
 
                           if (limb.locked) {
@@ -243,12 +318,32 @@ jobs:
 
                       centerOfSupport = centerOfSupport.scale(1.0 / lockedCount);
 
-                      stability = Mth.clamp((lockedCount / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f), 0.0f, 1.0f);
-                      float drain = (4 - lockedCount) * 0.18f + 0.04f;
+                      float gripResistance = (lockedCount == 4) ? 0.25f : (lockedCount == 3 ? 0.75f : 1.45f);
+                      float windInstability = (windSpeed / 28.0f) * gripResistance;
+                      // Намагнеженные руки дают до +12% к стабильности на сложных выступах
+                      float chalkStabilityBonus = (chalkLevel / 100.0f) * 0.12f;
+
+                      stability = Mth.clamp(
+                              (lockedCount / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f) - windInstability + chalkStabilityBonus,
+                              0.0f, 1.0f
+                      );
+
+                      // Сухие руки с магнезией экономят до 30% стамины, потные руки без магнезии увеличивают расход
+                      float chalkStaminaFactor = 1.25f - (chalkLevel / 100.0f) * 0.45f;
+                      float altitudeMultiplier = 1.0f + (hypoxiaFactor * 1.8f);
+                      float windStrain = (windSpeed * 0.004f) * gripResistance;
+                      float drain = ((4 - lockedCount) * 0.16f + 0.035f + windStrain) * altitudeMultiplier * chalkStaminaFactor;
                       stamina = Math.max(0.0f, stamina - drain);
 
-                      if (stamina <= 0.0f || stability < 0.12f) {
-                          disengageClimb(player, "§c[СРЫВ!] Закончились силы или потерян баланс!");
+                      if (isGusting && windSpeed > 15.0f && lockedCount <= 2) {
+                          player.setDeltaMovement(currentWind.scale(0.85).add(0, -0.2, 0));
+                          disengageClimb(player, "§c[СДУЛО ВЕТРОМ!] Шквальный порыв сорвал вас со скалы!");
+                          return;
+                      }
+
+                      if (stamina <= 0.0f || stability < 0.10f) {
+                          player.setDeltaMovement(currentWind.scale(0.45));
+                          disengageClimb(player, "§c[СРЫВ!] Вы сорвались со стены!");
                           return;
                       }
 
@@ -258,32 +353,199 @@ jobs:
                       Vec3 sideDir = lookDir.cross(new Vec3(0, 1, 0)).normalize();
                       double swayUp = (player.zza * 0.18);
                       double swaySide = (-player.xxa * 0.18);
-                      double fatigueSway = (stamina < 35f) ? Math.sin(player.tickCount * 0.4) * 0.03 : 0.0;
 
-                      Vec3 desiredPelvis = idealBodyPos.add(sideDir.scale(swaySide)).add(0, swayUp + fatigueSway, 0);
+                      double tremor = (stamina < 35f || hypoxiaFactor > 0.45f)
+                              ? Math.sin(player.tickCount * 0.55) * (0.025 + hypoxiaFactor * 0.035)
+                              : 0.0;
+
+                      Vec3 windPushOffset = currentWind.scale(0.55 * gripResistance);
+
+                      Vec3 desiredPelvis = idealBodyPos
+                              .add(sideDir.scale(swaySide))
+                              .add(0, swayUp + tremor, 0)
+                              .add(windPushOffset);
+
                       Vec3 velocity = desiredPelvis.subtract(player.position()).scale(0.28);
 
                       player.setDeltaMovement(velocity);
                       player.fallDistance = 0.0f;
 
-                      if (player.tickCount % 5 == 0) {
-                          String bar = String.format("§6Стамина: %.0f%% §7| §bБаланс: %.0f%% §7| §aОпор: %d/4",
-                                  stamina, stability * 100f, lockedCount);
-                          player.displayClientMessage(Component.literal(bar), true);
+                      if (windSpeed > 8.0f && player.tickCount % 2 == 0) {
+                          Vec3 pPos = player.getEyePosition().add(
+                                  (player.level().random.nextDouble() - 0.5) * 3.0,
+                                  (player.level().random.nextDouble() - 0.5) * 2.0,
+                                  (player.level().random.nextDouble() - 0.5) * 3.0
+                          );
+                          player.level().addParticle(
+                                  player.getY() > 130 ? ParticleTypes.SNOWFLAKE : ParticleTypes.CLOUD,
+                                  pPos.x, pPos.y, pPos.z,
+                                  currentWind.x * 1.4, currentWind.y * 0.5, currentWind.z * 1.4
+                          );
                       }
+
+                      if (isGusting && gustTimer == 58) {
+                          player.playSound(SoundEvents.ELYTRA_FLYING, 0.45f, 1.6f);
+                      }
+
+                      if (player.tickCount % 4 == 0) {
+                          String windAlert = isGusting ? "§c§lШКВАЛ! " : "";
+                          String chalkColor = chalkLevel < 25.0f ? "§c" : "§f";
+                          String hud = String.format(
+                                  "%s§6Сил: %.0f%% §7| §bБал: %.0f%% §7| %sМел: %.0f%% §7| §eКрюки: %d §7| §fВет: %.0fм/с §7| §3%.0fкПа",
+                                  windAlert, stamina, stability * 100f, chalkColor, chalkLevel, pitonsLeft, windSpeed, pressureKPa
+                          );
+                          player.displayClientMessage(Component.literal(hud), true);
+                      }
+                  }
+
+                  // Нанесение магнезии на руки (клавиша G)
+                  private static void useChalk(Player player) {
+                      if (chalkUsesLeft <= 0) {
+                          player.displayClientMessage(Component.literal("§c[Магнезия] Мешочек с магнезией пуст! Спуститесь на землю для пополнения."), true);
+                          return;
+                      }
+                      chalkUsesLeft--;
+                      chalkLevel = 100.0f;
+                      stamina = Math.min(100.0f, stamina + 8.0f);
+                      player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
+
+                      // Облачко белой меловой пыли вокруг рук
+                      for (int i = 0; i < 12; i++) {
+                          Vec3 handPos = climbingActive ? LIMBS[i % 2].currentPos : player.getEyePosition().add(player.getLookAngle().scale(0.5));
+                          player.level().addParticle(
+                                  ParticleTypes.CLOUD,
+                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.3,
+                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.3,
+                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.3,
+                                  0.0, 0.02, 0.0
+                          );
+                      }
+                      player.displayClientMessage(Component.literal("§f[Магнезия] Руки обработаны мелом! Сцепление 100% (Осталось порций: " + chalkUsesLeft + ")"), true);
+                  }
+
+                  // Забивание страховочного крюка (шлямбура) в скалу (клавиша V)
+                  private static void placePiton(Player player) {
+                      if (pitonsLeft <= 0) {
+                          player.displayClientMessage(Component.literal("§c[Страховка] Закончились страховочные крючья! (0/5)"), true);
+                          return;
+                      }
+                      Vec3 eye = player.getEyePosition();
+                      Vec3 reach = eye.add(player.getLookAngle().scale(2.0));
+                      BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+
+                      if (hit.getType() == HitResult.Type.BLOCK) {
+                          Vec3 pitonPos = hit.getLocation();
+                          PLACED_PITONS.add(pitonPos);
+                          pitonsLeft--;
+                          player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
+
+                          // Искры от забивания стального крюка в породу
+                          for (int i = 0; i < 8; i++) {
+                              player.level().addParticle(
+                                      ParticleTypes.CRIT,
+                                      pitonPos.x, pitonPos.y, pitonPos.z,
+                                      (player.level().random.nextDouble() - 0.5) * 0.25,
+                                      0.1,
+                                      (player.level().random.nextDouble() - 0.5) * 0.25
+                              );
+                          }
+                          player.displayClientMessage(Component.literal("§e[Страховка] Крюк надежно вбит в скалу! Веревка пристегнута (Осталось крючьев: " + pitonsLeft + ")"), true);
+                      } else {
+                          player.displayClientMessage(Component.literal("§c[Страховка] Наведи прицел вплотную на скалу, чтобы вбить крюк!"), true);
+                      }
+                  }
+
+                  // Динамическая физика страховки: удержание игрока веревкой при срыве со скалы
+                  private static void updateRopeArrestPhysics(Player player) {
+                      if (PLACED_PITONS.isEmpty()) return;
+
+                      Vec3 lastAnchor = PLACED_PITONS.get(PLACED_PITONS.size() - 1);
+                      Vec3 waistPos = player.position().add(0, 0.85, 0);
+                      double dist = waistPos.distanceTo(lastAnchor);
+
+                      if (dist > maxRopeSlack) {
+                          if (!hangingOnRope) {
+                              hangingOnRope = true;
+                              player.playSound(SoundEvents.LEASH_KNOT_PLACE, 1.0f, 0.8f);
+                              player.displayClientMessage(Component.literal("§a[СТРАХОВКА СРАБОТАЛА!] Веревка удержала срыв! Жми ПРОБЕЛ для подъема или R у стены"), true);
+                          }
+
+                          // Пружинящее натяжение динамической альпинистской веревки (закон Гука + демпфирование)
+                          Vec3 pullDir = lastAnchor.subtract(waistPos).normalize();
+                          double stretch = dist - maxRopeSlack;
+                          Vec3 currentVel = player.getDeltaMovement();
+
+                          // Подтягивание вверх по веревке при зажатом Пробеле (жумар)
+                          double climbRopeBoost = Minecraft.getInstance().options.keyJump.isDown() ? 0.14 : 0.0;
+
+                          Vec3 springForce = pullDir.scale(Math.min(stretch * 0.38, 0.75));
+                          Vec3 dampedVel = currentVel.scale(0.65).add(springForce).add(0, climbRopeBoost, 0);
+
+                          player.setDeltaMovement(dampedVel);
+                          player.fallDistance = 0.0f;
+                      } else {
+                          hangingOnRope = false;
+                      }
+                  }
+
+                  private static void updateAtmosphereAndWind(Player player) {
+                      Level level = player.level();
+                      double y = player.getY();
+
+                      double altAboveSea = Math.max(0.0, y - 64.0);
+                      pressureKPa = (float) Mth.clamp(101.3 * Math.exp(-altAboveSea / 260.0), 38.0, 101.3);
+                      hypoxiaFactor = (float) Mth.clamp((y - 85.0) / 190.0, 0.0, 1.0);
+
+                      BlockPos eyePos = BlockPos.containing(player.getEyePosition());
+                      int skyLight = level.getBrightness(LightLayer.SKY, eyePos);
+                      float exposure = skyLight / 15.0f;
+
+                      if (exposure <= 0.1f) {
+                          windSpeed = Mth.lerp(0.05f, windSpeed, 0.5f);
+                          currentWind = Vec3.ZERO;
+                          isGusting = false;
+                          return;
+                      }
+
+                      float weatherMult = level.isThundering() ? 2.1f : (level.isRaining() ? 1.45f : 1.0f);
+
+                      if (gustTimer > 0) {
+                          gustTimer--;
+                          isGusting = true;
+                      } else {
+                          isGusting = false;
+                          float gustChance = (0.003f + hypoxiaFactor * 0.012f) * weatherMult;
+                          if (level.random.nextFloat() < gustChance) {
+                              gustTimer = 60 + level.random.nextInt(50);
+                              isGusting = true;
+                          }
+                      }
+
+                      float baseWind = (2.5f + (float)(altAboveSea * 0.085f)) * exposure * weatherMult;
+                      float targetWindSpeed = isGusting ? baseWind * 2.15f + 5.5f : baseWind;
+                      windSpeed = Mth.lerp(0.04f, windSpeed, Mth.clamp(targetWindSpeed, 0.0f, 32.0f));
+
+                      double angle = (level.getGameTime() * 0.007) + Math.sin(level.getGameTime() * 0.03) * 0.8;
+                      double wx = Math.cos(angle);
+                      double wz = Math.sin(angle);
+                      double wy = Math.sin(level.getGameTime() * 0.05) * 0.25;
+
+                      double forceScale = (windSpeed / 25.0) * 0.35;
+                      currentWind = new Vec3(wx * forceScale, wy * forceScale, wz * forceScale);
                   }
 
                   private static void handleLimbInput(Player player, int index, KeyMapping key) {
                       Limb limb = LIMBS[index];
                       if (key.isDown()) {
                           Vec3 eye = player.getEyePosition();
-                          Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
+                          double maxReachRay = 2.1 - (hypoxiaFactor * 0.35);
+                          Vec3 reach = eye.add(player.getLookAngle().scale(maxReachRay));
                           BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
 
                           if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
                               Vec3 gripPoint = hit.getLocation();
                               Vec3 root = getJointRoot(player, limb);
-                              if (root.distanceTo(gripPoint) <= 1.55) {
+                              if (root.distanceTo(gripPoint) <= 1.55 - (hypoxiaFactor * 0.2)) {
                                   limb.targetPos = gripPoint;
                                   BlockState state = player.level().getBlockState(hit.getBlockPos());
                                   limb.gripQuality = state.getBlock().getFriction();
@@ -359,7 +621,9 @@ jobs:
 
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
-                      if (!climbingActive || event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+                      if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+                      if (!climbingActive && PLACED_PITONS.isEmpty()) return;
+
                       Minecraft mc = Minecraft.getInstance();
                       Player player = mc.player;
                       if (player == null) return;
@@ -372,20 +636,58 @@ jobs:
                       poseStack.pushPose();
                       poseStack.translate(-cam.x, -cam.y, -cam.z);
 
-                      for (Limb limb : LIMBS) {
-                          float r = limb.isHand ? 0.1f : 0.2f;
-                          float g = limb.locked ? 0.95f : 0.2f;
-                          float b = limb.isHand ? 0.95f : 0.3f;
+                      // Отрисовка вбитых страховочных крючьев и натянутой между ними альпинистской веревки
+                      if (!PLACED_PITONS.isEmpty()) {
+                          for (int i = 0; i < PLACED_PITONS.size(); i++) {
+                              Vec3 piton = PLACED_PITONS.get(i);
+                              AABB pitonBox = new AABB(piton, piton).inflate(0.06);
+                              LevelRenderer.renderLineBox(poseStack, builder, pitonBox.minX, pitonBox.minY, pitonBox.minZ, pitonBox.maxX, pitonBox.maxY, pitonBox.maxZ, 0.9f, 0.5f, 0.1f, 1.0f);
 
-                          AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
-                          LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
+                              if (i > 0) {
+                                  drawRopeSegments(poseStack, builder, PLACED_PITONS.get(i - 1), piton, false);
+                              }
+                          }
+                          Vec3 lastPiton = PLACED_PITONS.get(PLACED_PITONS.size() - 1);
+                          Vec3 playerWaist = player.position().add(0, 0.85, 0);
+                          drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
+                      }
 
-                          AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
-                          LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+                      // Отрисовка 4 конечностей и IK-суставов в режиме скалолазания
+                      if (climbingActive) {
+                          for (Limb limb : LIMBS) {
+                              float r = limb.isHand ? 0.1f : 0.2f;
+                              float g = limb.locked ? 0.95f : 0.2f;
+                              float b = limb.isHand ? 0.95f : 0.3f;
+
+                              AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
+                              LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
+
+                              AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
+                              LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+                          }
                       }
 
                       poseStack.popPose();
                       buffer.endBatch(RenderType.lines());
+                  }
+
+                  // Визуализация веревки между крючьями и поясом игрока (с провисанием или натяжением)
+                  private static void drawRopeSegments(PoseStack poseStack, VertexConsumer builder, Vec3 from, Vec3 to, boolean taut) {
+                      int steps = 12;
+                      for (int s = 0; s <= steps; s++) {
+                          double t = (double) s / steps;
+                          Vec3 pt = from.lerp(to, t);
+                          // Если веревка не натянута срывом, она слегка провисает параболой вниз
+                          if (!taut) {
+                              double sag = Math.sin(t * Math.PI) * 0.25;
+                              pt = pt.add(0, -sag, 0);
+                          }
+                          AABB node = new AABB(pt, pt).inflate(0.025);
+                          float r = taut ? 1.0f : 0.85f;
+                          float g = taut ? 0.2f : 0.75f;
+                          float b = 0.2f;
+                          LevelRenderer.renderLineBox(poseStack, builder, node.minX, node.minY, node.minZ, node.maxX, node.maxY, node.maxZ, r, g, b, 0.9f);
+                      }
                   }
               }
           }
