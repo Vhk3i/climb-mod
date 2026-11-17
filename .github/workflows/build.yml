@@ -39,7 +39,7 @@ jobs:
               id 'net.minecraftforge.gradle' version '[6.0,6.2)'
           }
 
-          version = '1.3.0'
+          version = '1.4.0'
           group = 'com.realisticclimbing'
           base {
               archivesName = 'realisticclimbing-1.20.1'
@@ -75,9 +75,9 @@ jobs:
           license="MIT"
           [[mods]]
           modId="realisticclimbing"
-          version="1.3.0"
+          version="1.4.0"
           displayName="Realistic Climbing Simulator"
-          description="Full Procedural Animation & 4-Limb IK Climbing Simulator"
+          description="Full Procedural Animation, 4-Limb IK & Realistic Limb Injury System"
           EOF
 
           cat << 'EOF' > src/main/resources/pack.mcmeta
@@ -106,16 +106,19 @@ jobs:
           import net.minecraft.client.renderer.entity.player.PlayerRenderer;
           import net.minecraft.core.BlockPos;
           import net.minecraft.core.Direction;
+          import net.minecraft.core.particles.BlockParticleOption;
           import net.minecraft.core.particles.ParticleTypes;
           import net.minecraft.network.chat.Component;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
-          import net.minecraft.world.entity.HumanoidArm;
+          import net.minecraft.world.effect.MobEffectInstance;
+          import net.minecraft.world.effect.MobEffects;
           import net.minecraft.world.entity.player.Player;
           import net.minecraft.world.level.ClipContext;
           import net.minecraft.world.level.Level;
           import net.minecraft.world.level.LightLayer;
+          import net.minecraft.world.level.block.Blocks;
           import net.minecraft.world.level.block.state.BlockState;
           import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.BlockHitResult;
@@ -149,19 +152,24 @@ jobs:
               public static KeyMapping KEY_RIGHT_FOOT;
               public static KeyMapping KEY_USE_CHALK;
               public static KeyMapping KEY_PLACE_PITON;
+              public static KeyMapping KEY_BANDAGE; // B - Перевязать рану / Вправить вывих
 
               public static boolean climbingActive = false;
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
 
-              // Таймеры процедурных анимаций действий
-              public static int chalkAnimTicks = 0;    // Анимация растирания магнезии ладонями
-              public static int pitonAnimTicks = 0;    // Анимация забивания крюка молотком
-              public static int fallFlailTicks = 0;    // Анимация паники и взмахов руками при срыве
-              public static int pullUpAnimTicks = 0;   // Анимация рывка корпуса вверх
+              // Таймеры процедурных анимаций
+              public static int chalkAnimTicks = 0;
+              public static int pitonAnimTicks = 0;
+              public static int fallFlailTicks = 0;
+              public static int pullUpAnimTicks = 0;
+              public static int bandageAnimTicks = 0; // Анимация перевязки и наложения шины
 
               public static float chalkLevel = 100.0f;
               public static int chalkUsesLeft = 8;
+              public static int bandagesLeft = 4;     // Запас бинтов и шин
+              public static float bloodLoss = 0.0f;   // Общая кровопотеря (0 - 100%)
+              public static double prevFallSpeed = 0.0;
 
               public static final List<Vec3> PLACED_PITONS = new ArrayList<>();
               public static int pitonsLeft = 5;
@@ -178,6 +186,7 @@ jobs:
 
               public static class Limb {
                   public final String name;
+                  public final String shortName;
                   public final boolean isHand;
                   public final boolean isLeft;
                   public boolean locked = false;
@@ -189,18 +198,42 @@ jobs:
                   public Vec3 elbowOrKneePos = Vec3.ZERO;
                   public float gripQuality = 1.0f;
 
-                  public Limb(String name, boolean isHand, boolean isLeft) {
+                  // Система реалистичных ранений конечности
+                  public float health = 100.0f;       // 100% - здорова, <20% - перелом (отказ)
+                  public boolean bleeding = false;    // Сорванная кожа / открытое кровотечение
+                  public boolean dislocated = false;  // Вывих сустава от рывка
+                  public boolean fractured = false;   // Открытый/закрытый перелом кости
+                  public float painShake = 0.0f;      // Болевой тремор
+
+                  public Limb(String name, String shortName, boolean isHand, boolean isLeft) {
                       this.name = name;
+                      this.shortName = shortName;
                       this.isHand = isHand;
                       this.isLeft = isLeft;
+                  }
+
+                  public void resetInjuries() {
+                      this.health = 100.0f;
+                      this.bleeding = false;
+                      this.dislocated = false;
+                      this.fractured = false;
+                      this.painShake = 0.0f;
+                  }
+
+                  public float getEffectiveness() {
+                      if (fractured || health < 20.0f) return 0.0f;
+                      float eff = health / 100.0f;
+                      if (dislocated) eff *= 0.45f;
+                      if (bleeding) eff *= 0.75f;
+                      return Mth.clamp(eff, 0.1f, 1.0f);
                   }
               }
 
               public static final Limb[] LIMBS = new Limb[]{
-                      new Limb("Левая рука", true, true),
-                      new Limb("Правая рука", true, false),
-                      new Limb("Левая нога", false, true),
-                      new Limb("Правая нога", false, false)
+                      new Limb("Левая рука", "ЛР", true, true),
+                      new Limb("Правая рука", "ПР", true, false),
+                      new Limb("Левая нога", "ЛН", false, true),
+                      new Limb("Правая нога", "ПН", false, false)
               };
 
               public RealisticClimbingMod() {
@@ -219,6 +252,7 @@ jobs:
                       KEY_RIGHT_FOOT = new KeyMapping("Опора: Правая нога", GLFW.GLFW_KEY_C, "Realistic Climbing");
                       KEY_USE_CHALK = new KeyMapping("Нанести магнезию (Мел)", GLFW.GLFW_KEY_G, "Realistic Climbing");
                       KEY_PLACE_PITON = new KeyMapping("Забить страховочный крюк", GLFW.GLFW_KEY_V, "Realistic Climbing");
+                      KEY_BANDAGE = new KeyMapping("Перевязать рану / Наложить шину", GLFW.GLFW_KEY_B, "Realistic Climbing");
 
                       event.register(KEY_TOGGLE_CLIMB);
                       event.register(KEY_LEFT_HAND);
@@ -227,6 +261,7 @@ jobs:
                       event.register(KEY_RIGHT_FOOT);
                       event.register(KEY_USE_CHALK);
                       event.register(KEY_PLACE_PITON);
+                      event.register(KEY_BANDAGE);
                   }
 
                   @SubscribeEvent
@@ -236,24 +271,21 @@ jobs:
                       Minecraft mc = Minecraft.getInstance();
                       if (player != mc.player) return;
 
-                      // Уменьшаем таймеры процедурных анимаций
                       if (chalkAnimTicks > 0) chalkAnimTicks--;
                       if (pitonAnimTicks > 0) pitonAnimTicks--;
                       if (pullUpAnimTicks > 0) pullUpAnimTicks--;
+                      if (bandageAnimTicks > 0) bandageAnimTicks--;
                       if (fallFlailTicks > 0) {
                           fallFlailTicks--;
                           if (player.onGround() || climbingActive) fallFlailTicks = 0;
                       }
 
                       updateAtmosphereAndWind(player);
+                      updateMedicalAndInjuries(player);
 
-                      if (player.onGround() && !climbingActive) {
-                          if (!PLACED_PITONS.isEmpty() || pitonsLeft < 5 || chalkUsesLeft < 8) {
-                              PLACED_PITONS.clear();
-                              pitonsLeft = 5;
-                              chalkUsesLeft = 8;
-                              hangingOnRope = false;
-                          }
+                      // Обработка клавиши B (Перевязка / вправление вывиха)
+                      while (KEY_BANDAGE.consumeClick()) {
+                          applyFirstAid(player);
                       }
 
                       while (KEY_USE_CHALK.consumeClick()) {
@@ -270,9 +302,9 @@ jobs:
                                   climbingActive = true;
                                   hangingOnRope = false;
                                   fallFlailTicks = 0;
-                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Все анимации тела и рук активны (F5 / 1-е лицо)"), true);
+                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E/Z/C - Конечности | G - Мел | V - Крюк | B - Бинт"), true);
                               } else {
-                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди ближе к стене!"), true);
+                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди ближе к стене (нужна хотя бы 1 целая рука)!"), true);
                               }
                           } else {
                               disengageClimb(player, "§eВы отпустили стену", false);
@@ -280,8 +312,8 @@ jobs:
                       }
 
                       if (!climbingActive) {
-                          float recoveryRate = 0.45f * (1.0f - hypoxiaFactor * 0.60f);
-                          stamina = Math.min(100.0f, stamina + recoveryRate);
+                          float recoveryRate = 0.45f * (1.0f - hypoxiaFactor * 0.60f) * (1.0f - bloodLoss * 0.005f);
+                          stamina = Math.min(100.0f, stamina + Math.max(0.05f, recoveryRate));
                           updateRopeArrestPhysics(player);
                           return;
                       }
@@ -299,17 +331,22 @@ jobs:
                       Vec3 centerOfSupport = Vec3.ZERO;
 
                       double chalkBonus = (chalkLevel / 100.0) * 0.12;
-                      double maxStretchDist = 1.62 - (hypoxiaFactor * 0.22) + chalkBonus;
 
                       for (int i = 0; i < 4; i++) {
                           Limb limb = LIMBS[i];
                           Vec3 rootPos = getJointRoot(player, limb);
 
-                          // Плавная дуговая анимация переноса конечности от старого зацепа к новому
+                          // Если конечность сломана (<20% здоровья), она не может удерживать стену
+                          if (limb.fractured || limb.health < 20.0f) {
+                              limb.fractured = true;
+                              limb.locked = false;
+                          }
+
                           if (limb.moveProgress < 1.0f) {
-                              limb.moveProgress = Math.min(1.0f, limb.moveProgress + 0.18f);
+                              // Поврежденная конечность двигается медленнее из-за боли
+                              float speed = 0.18f * Math.max(0.45f, limb.getEffectiveness());
+                              limb.moveProgress = Math.min(1.0f, limb.moveProgress + speed);
                               Vec3 baseLerp = limb.startPos.lerp(limb.targetPos, limb.moveProgress);
-                              // Дуга отрыва руки/ноги на себя от стены во время перехвата
                               Vec3 wallOut = Vec3.directionFromRotation(0, lockedWallYaw).scale(-Math.sin(limb.moveProgress * Math.PI) * 0.28);
                               limb.currentPos = baseLerp.add(wallOut);
                               if (limb.moveProgress >= 1.0f) {
@@ -322,15 +359,21 @@ jobs:
 
                           limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
 
-                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > maxStretchDist) {
+                          // Максимальное растяжение снижается, если сустав вывихнут или ранен
+                          double limbMaxStretch = (1.62 - (hypoxiaFactor * 0.22) + chalkBonus) * (0.65 + 0.35 * limb.getEffectiveness());
+
+                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > limbMaxStretch) {
                               limb.locked = false;
-                              player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась от натяжения!"), true);
+                              // При насильственном срыве руки с камня под нагрузкой сдирается кожа и травмируется сустав
+                              inflictLimbRipInjury(player, limb);
                           }
 
-                          if (limb.locked && limb.isHand && chalkLevel < 15.0f && windSpeed > 12.0f) {
-                              if (player.level().random.nextFloat() < 0.008f) {
+                          // Кровоточащая или потная рука без магнезии может соскользнуть с камня
+                          float slipChance = (chalkLevel < 15.0f ? 0.006f : 0.0f) + (limb.bleeding ? 0.008f : 0.0f) + (limb.dislocated ? 0.006f : 0.0f);
+                          if (limb.locked && limb.isHand && slipChance > 0.0f && (windSpeed > 10.0f || stamina < 50.0f)) {
+                              if (player.level().random.nextFloat() < slipChance) {
                                   limb.locked = false;
-                                  player.displayClientMessage(Component.literal("§c[!] Скользкие руки! " + limb.name + " соскользнула (нажми G)!"), true);
+                                  inflictSkinAbrasion(player, limb);
                               }
                           }
 
@@ -341,26 +384,43 @@ jobs:
                           }
                       }
 
+                      // Если игрок висит всего на одной руке при сильном ветре — риск вывиха плечевого сустава
+                      if (lockedCount == 1 && windSpeed > 11.0f && player.level().random.nextFloat() < 0.015f) {
+                          for (Limb l : LIMBS) {
+                              if (l.locked && !l.dislocated) {
+                                  l.dislocated = true;
+                                  l.health = Math.max(25.0f, l.health - 22.0f);
+                                  player.playSound(SoundEvents.SKELETON_HURT, 0.9f, 0.65f);
+                                  player.displayClientMessage(Component.literal("§4[ТРАВМА!] Вывих сустава (" + l.name + ") от чрезмерной нагрузки! Нажми B для вправления!"), true);
+                              }
+                          }
+                      }
+
                       if (lockedCount < 2 || handsLocked == 0) {
-                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — слишком мало точек захвата!", true);
+                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — конечности не выдержали!", true);
                           return;
                       }
 
                       centerOfSupport = centerOfSupport.scale(1.0 / lockedCount);
+
+                      // Суммарная эффективность здоровых конечностей
+                      float totalLimbEff = 0.0f;
+                      for (Limb l : LIMBS) if (l.locked) totalLimbEff += l.getEffectiveness();
 
                       float gripResistance = (lockedCount == 4) ? 0.25f : (lockedCount == 3 ? 0.75f : 1.45f);
                       float windInstability = (windSpeed / 28.0f) * gripResistance;
                       float chalkStabilityBonus = (chalkLevel / 100.0f) * 0.12f;
 
                       stability = Mth.clamp(
-                              (lockedCount / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f) - windInstability + chalkStabilityBonus,
+                              (totalLimbEff / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f) - windInstability + chalkStabilityBonus,
                               0.0f, 1.0f
                       );
 
                       float chalkStaminaFactor = 1.25f - (chalkLevel / 100.0f) * 0.45f;
+                      float injuryPainMultiplier = 1.0f + ((4.0f - totalLimbEff) * 0.35f) + (bloodLoss * 0.01f);
                       float altitudeMultiplier = 1.0f + (hypoxiaFactor * 1.8f);
                       float windStrain = (windSpeed * 0.004f) * gripResistance;
-                      float drain = ((4 - lockedCount) * 0.16f + 0.035f + windStrain) * altitudeMultiplier * chalkStaminaFactor;
+                      float drain = ((4 - lockedCount) * 0.16f + 0.035f + windStrain) * altitudeMultiplier * chalkStaminaFactor * injuryPainMultiplier;
                       stamina = Math.max(0.0f, stamina - drain);
 
                       if (isGusting && windSpeed > 15.0f && lockedCount <= 2) {
@@ -371,7 +431,7 @@ jobs:
 
                       if (stamina <= 0.0f || stability < 0.10f) {
                           player.setDeltaMovement(currentWind.scale(0.45));
-                          disengageClimb(player, "§c[СРЫВ!] Вы сорвались со стены!", true);
+                          disengageClimb(player, "§c[СРЫВ!] Силы иссякли от боли и усталости!", true);
                           return;
                       }
 
@@ -383,15 +443,15 @@ jobs:
                       double swaySide = (-player.xxa * 0.18);
                       if (player.zza > 0.1f && pullUpAnimTicks == 0) pullUpAnimTicks = 10;
 
-                      double tremor = (stamina < 35f || hypoxiaFactor > 0.45f)
-                              ? Math.sin(player.tickCount * 0.55) * (0.025 + hypoxiaFactor * 0.035)
+                      double painTremor = (stamina < 35f || hypoxiaFactor > 0.45f || bloodLoss > 20f)
+                              ? Math.sin(player.tickCount * 0.65) * (0.025 + hypoxiaFactor * 0.03 + bloodLoss * 0.001)
                               : 0.0;
 
                       Vec3 windPushOffset = currentWind.scale(0.55 * gripResistance);
 
                       Vec3 desiredPelvis = idealBodyPos
                               .add(sideDir.scale(swaySide))
-                              .add(0, swayUp + tremor, 0)
+                              .add(0, swayUp + painTremor, 0)
                               .add(windPushOffset);
 
                       Vec3 velocity = desiredPelvis.subtract(player.position()).scale(0.28);
@@ -399,7 +459,6 @@ jobs:
                       player.setDeltaMovement(velocity);
                       player.fallDistance = 0.0f;
 
-                      // Фиксируем поворот корпуса лицом к стене для реалистичной посадки на F5
                       player.yBodyRot = lockedWallYaw;
                       player.yBodyRotO = lockedWallYaw;
 
@@ -422,12 +481,220 @@ jobs:
 
                       if (player.tickCount % 4 == 0) {
                           String windAlert = isGusting ? "§c§lШКВАЛ! " : "";
-                          String chalkColor = chalkLevel < 25.0f ? "§c" : "§f";
+                          String limbHud = formatLimbHealthHud();
                           String hud = String.format(
-                                  "%s§6Сил: %.0f%% §7| §bБал: %.0f%% §7| %sМел: %.0f%% §7| §eКрюки: %d §7| §fВет: %.0fм/с §7| §3%.0fкПа",
-                                  windAlert, stamina, stability * 100f, chalkColor, chalkLevel, pitonsLeft, windSpeed, pressureKPa
+                                  "%s§6Сил:%.0f%% §7| %s §7| §fМел:%.0f%% §7| §aБинт:%d §7| §eКрюк:%d",
+                                  windAlert, stamina, limbHud, chalkLevel, bandagesLeft, pitonsLeft
                           );
                           player.displayClientMessage(Component.literal(hud), true);
+                      }
+                  }
+
+                  // Формирование компактной сводки состояния 4 конечностей для HUD
+                  private static String formatLimbHealthHud() {
+                      StringBuilder sb = new StringBuilder();
+                      for (int i = 0; i < 4; i++) {
+                          Limb l = LIMBS[i];
+                          String col = "§a";
+                          String tag = "";
+                          if (l.fractured || l.health < 20f) {
+                              col = "§4§l";
+                              tag = "СЛОМ";
+                          } else if (l.bleeding) {
+                              col = "§c";
+                              tag = "КРОВЬ";
+                          } else if (l.dislocated) {
+                              col = "§6";
+                              tag = "ВЫВИХ";
+                          } else if (l.health < 75f) {
+                              col = "§e";
+                              tag = String.format("%.0f%%", l.health);
+                          } else {
+                              tag = "ОК";
+                          }
+                          sb.append(col).append(l.shortName).append(":").append(tag);
+                          if (i < 3) sb.append(" ");
+                      }
+                      return sb.toString();
+                  }
+
+                  // Обновление кровотечений, ударов при падении и хромоты на земле
+                  private static void updateMedicalAndInjuries(Player player) {
+                      double vy = player.getDeltaMovement().y;
+
+                      // Детект жесткого удара о землю или выступ после падения
+                      if (player.onGround() && !climbingActive) {
+                          if (prevFallSpeed < -0.68) {
+                              double impact = Math.abs(prevFallSpeed);
+                              inflictFallImpactInjuries(player, impact);
+                          }
+                          // Пополнение снаряжения на земле
+                          if (!PLACED_PITONS.isEmpty() || pitonsLeft < 5 || chalkUsesLeft < 8 || bandagesLeft < 4) {
+                              PLACED_PITONS.clear();
+                              pitonsLeft = 5;
+                              chalkUsesLeft = 8;
+                              bandagesLeft = 4;
+                              hangingOnRope = false;
+                          }
+                      }
+
+                      // Детект удара о стену на большой горизонтальной скорости (маятник на веревке или шквал)
+                      if (!climbingActive && player.horizontalCollision && player.getDeltaMovement().horizontalDistance() > 0.38) {
+                          Limb randomSideLimb = LIMBS[player.level().random.nextInt(4)];
+                          randomSideLimb.health = Math.max(15.0f, randomSideLimb.health - 28.0f);
+                          randomSideLimb.bleeding = true;
+                          if (randomSideLimb.health < 25.0f) randomSideLimb.fractured = true;
+                          spawnBloodParticles(player, randomSideLimb.currentPos.equals(Vec3.ZERO) ? player.position().add(0, 1, 0) : randomSideLimb.currentPos, 12);
+                          player.playSound(SoundEvents.PLAYER_HURT, 0.9f, 0.8f);
+                          player.displayClientMessage(Component.literal("§4[УДАР О СКАЛУ!] Повреждена " + randomSideLimb.name + "! Открылось кровотечение!"), true);
+                      }
+
+                      prevFallSpeed = vy;
+
+                      // Обработка текущего кровотечения и капель крови
+                      int bleedingCount = 0;
+                      for (Limb limb : LIMBS) {
+                          if (limb.bleeding) {
+                              bleedingCount++;
+                              limb.health = Math.max(10.0f, limb.health - 0.035f);
+                              if (player.tickCount % 8 == 0) {
+                                  Vec3 bleedPos = climbingActive ? limb.currentPos : getJointRoot(player, limb);
+                                  spawnBloodParticles(player, bleedPos, 3);
+                              }
+                          } else if (limb.health < 100.0f && !limb.fractured && !limb.dislocated) {
+                              // Медленная регенерация перевязанных ссадин
+                              limb.health = Math.min(100.0f, limb.health + 0.02f);
+                          }
+                      }
+
+                      if (bleedingCount > 0) {
+                          bloodLoss = Math.min(100.0f, bloodLoss + bleedingCount * 0.045f);
+                          // Реальный урон здоровью игрока при запущенном кровотечении
+                          if (player.tickCount % 80 == 0) {
+                              player.hurt(player.damageSources().generic(), 1.0f);
+                          }
+                      } else {
+                          bloodLoss = Math.max(0.0f, bloodLoss - 0.06f);
+                      }
+
+                      // Хромота при ходьбе со сломанной или вывихнутой ногой
+                      if (player.onGround() && !climbingActive) {
+                          float legPenalty = 1.0f;
+                          if (LIMBS[2].fractured || LIMBS[2].dislocated) legPenalty -= 0.35f;
+                          if (LIMBS[3].fractured || LIMBS[3].dislocated) legPenalty -= 0.35f;
+                          if (legPenalty < 1.0f) {
+                              Vec3 m = player.getDeltaMovement();
+                              player.setDeltaMovement(m.x * legPenalty, m.y, m.z * legPenalty);
+                          }
+                      }
+
+                      // Головокружение при тяжелой кровопотере (>60%)
+                      if (bloodLoss > 60.0f && player.tickCount % 60 == 0) {
+                          player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 100, 0, false, false));
+                      }
+                  }
+
+                  // Травма при срыве пальцев с зацепа под большой нагрузкой
+                  private static void inflictLimbRipInjury(Player player, Limb limb) {
+                      limb.health = Math.max(15.0f, limb.health - 18.0f);
+                      limb.bleeding = true;
+                      if (limb.health <= 20.0f) limb.fractured = true;
+                      spawnBloodParticles(player, limb.currentPos, 10);
+                      player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 1.1f);
+                      player.displayClientMessage(Component.literal("§c[РАНЕНИЕ!] " + limb.name + " сорвалась с камня! Сорвана кожа и идет кровь (нажми B для перевязки)!"), true);
+                  }
+
+                  // Ссадина и соскальзывание потной руки без магнезии
+                  private static void inflictSkinAbrasion(Player player, Limb limb) {
+                      limb.health = Math.max(25.0f, limb.health - 12.0f);
+                      limb.bleeding = true;
+                      spawnBloodParticles(player, limb.currentPos, 8);
+                      player.playSound(SoundEvents.PLAYER_HURT, 0.65f, 1.25f);
+                      player.displayClientMessage(Component.literal("§c[ССАДИНА!] " + limb.name + " соскользнула по острому камню! Ладонь в крови (G - Мел, B - Бинт)!"), true);
+                  }
+
+                  // Переломы и вывихи ног при жестком падении на камни
+                  private static void inflictFallImpactInjuries(Player player, double impactSpeed) {
+                      float dmg = (float) ((impactSpeed - 0.62) * 85.0);
+                      if (dmg <= 8.0f) return;
+
+                      LIMBS[2].health = Math.max(5.0f, LIMBS[2].health - dmg);
+                      LIMBS[3].health = Math.max(5.0f, LIMBS[3].health - dmg * 0.9f);
+
+                      if (LIMBS[2].health < 25.0f) {
+                          LIMBS[2].fractured = true;
+                          LIMBS[2].bleeding = true;
+                      } else if (LIMBS[2].health < 55.0f) {
+                          LIMBS[2].dislocated = true;
+                      }
+
+                      if (LIMBS[3].health < 25.0f) {
+                          LIMBS[3].fractured = true;
+                          LIMBS[3].bleeding = true;
+                      } else if (LIMBS[3].health < 55.0f) {
+                          LIMBS[3].dislocated = true;
+                      }
+
+                      spawnBloodParticles(player, player.position().add(0, 0.3, 0), 18);
+                      player.playSound(SoundEvents.SKELETON_HURT, 1.0f, 0.55f);
+                      player.playSound(SoundEvents.PLAYER_BIG_FALL, 1.0f, 0.8f);
+                      player.displayClientMessage(Component.literal("§4§l[ПЕРЕЛОМ НОГ!] Жесткое падение повредило ноги! Нажми B, чтобы наложить шину и перевязать!"), true);
+                  }
+
+                  // Полевая медицина: перевязка бинтом, остановка крови и вправление вывихов/переломов (клавиша B)
+                  private static void applyFirstAid(Player player) {
+                      Limb worstLimb = null;
+                      float lowestScore = 100.0f;
+
+                      for (Limb l : LIMBS) {
+                          float score = l.health - (l.fractured ? 50f : 0f) - (l.bleeding ? 35f : 0f) - (l.dislocated ? 25f : 0f);
+                          if ((l.bleeding || l.dislocated || l.fractured || l.health < 90.0f) && score < lowestScore) {
+                              lowestScore = score;
+                              worstLimb = l;
+                          }
+                      }
+
+                      if (worstLimb == null) {
+                          player.displayClientMessage(Component.literal("§a[Медицина] Все конечности здоровы, перевязка не требуется!"), true);
+                          return;
+                      }
+
+                      if (bandagesLeft <= 0) {
+                          player.displayClientMessage(Component.literal("§c[Медицина] Бинты и шины закончились! Спуститесь на землю для пополнения аптечки."), true);
+                          return;
+                      }
+
+                      bandagesLeft--;
+                      bandageAnimTicks = 30; // 1.5 секунды анимации наматывания бинта
+
+                      boolean wasFracturedOrDislocated = worstLimb.fractured || worstLimb.dislocated;
+                      worstLimb.bleeding = false;
+                      worstLimb.dislocated = false;
+                      worstLimb.fractured = false;
+                      worstLimb.health = Math.min(100.0f, Math.max(65.0f, worstLimb.health + 45.0f));
+                      bloodLoss = Math.max(0.0f, bloodLoss - 30.0f);
+
+                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
+                      if (wasFracturedOrDislocated) {
+                          player.playSound(SoundEvents.SKELETON_STEP, 0.8f, 0.75f); // Звук вправления сустава/наложения шины
+                      }
+
+                      player.displayClientMessage(Component.literal(
+                              "§a[Медицина] " + worstLimb.name + " перевязана и зафиксирована шиной! Кровотечение остановлено (Бинтов: " + bandagesLeft + ")"
+                      ), true);
+                  }
+
+                  // Генерация реалистичных брызг и капель крови (частицы редстоун-блока)
+                  private static void spawnBloodParticles(Player player, Vec3 pos, int count) {
+                      BlockParticleOption bloodParticle = new BlockParticleOption(ParticleTypes.BLOCK, Blocks.REDSTONE_BLOCK.defaultBlockState());
+                      for (int i = 0; i < count; i++) {
+                          player.level().addParticle(
+                                  bloodParticle,
+                                  pos.x + (player.level().random.nextDouble() - 0.5) * 0.25,
+                                  pos.y + (player.level().random.nextDouble() - 0.5) * 0.25,
+                                  pos.z + (player.level().random.nextDouble() - 0.5) * 0.25,
+                                  0.0, -0.08, 0.0
+                          );
                       }
                   }
 
@@ -438,7 +705,7 @@ jobs:
                       }
                       chalkUsesLeft--;
                       chalkLevel = 100.0f;
-                      chalkAnimTicks = 24; // Запуск 1.2-секундной анимации растирания рук магнезией
+                      chalkAnimTicks = 24;
                       stamina = Math.min(100.0f, stamina + 8.0f);
                       player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
 
@@ -468,7 +735,7 @@ jobs:
                           Vec3 pitonPos = hit.getLocation();
                           PLACED_PITONS.add(pitonPos);
                           pitonsLeft--;
-                          pitonAnimTicks = 18; // Запуск анимации ударов молотком по крюку
+                          pitonAnimTicks = 18;
                           player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
 
                           for (int i = 0; i < 10; i++) {
@@ -498,7 +765,16 @@ jobs:
                               hangingOnRope = true;
                               fallFlailTicks = 0;
                               player.playSound(SoundEvents.LEASH_KNOT_PLACE, 1.0f, 0.8f);
-                              player.displayClientMessage(Component.literal("§a[СТРАХОВКА СРАБОТАЛА!] Веревка удержала срыв! Жми ПРОБЕЛ для подъема или R у стены"), true);
+
+                              // Если падение было слишком глубоким и быстрым, рывок веревки может травмировать спину/бедро
+                              if (player.getDeltaMovement().y < -0.95) {
+                                  LIMBS[2].dislocated = true;
+                                  LIMBS[2].health = Math.max(30.0f, LIMBS[2].health - 20.0f);
+                                  player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 0.9f);
+                                  player.displayClientMessage(Component.literal("§6[ЖЕСТКИЙ РЫВОК СТРАХОВКИ!] Веревка спасла жизнь, но вывихнуто бедро (нажми B)!"), true);
+                              } else {
+                                  player.displayClientMessage(Component.literal("§a[СТРАХОВКА СРАБОТАЛА!] Веревка удержала срыв! Жми ПРОБЕЛ для подъема или R у стены"), true);
+                              }
                           }
 
                           Vec3 pullDir = lastAnchor.subtract(waistPos).normalize();
@@ -566,16 +842,23 @@ jobs:
                   private static void handleLimbInput(Player player, int index, KeyMapping key) {
                       Limb limb = LIMBS[index];
                       if (key.isDown()) {
+                          if (limb.fractured || limb.health < 20.0f) {
+                              player.displayClientMessage(Component.literal("§4[ОТКАЗ!] " + limb.name + " сломана! Нажми B, чтобы наложить шину!"), true);
+                              return;
+                          }
+
                           limb.reaching = true;
                           Vec3 eye = player.getEyePosition();
-                          double maxReachRay = 2.1 - (hypoxiaFactor * 0.35);
+                          // Раненая конечность не может тянуться так же далеко, как здоровая
+                          double maxReachRay = (2.1 - (hypoxiaFactor * 0.35)) * (0.6 + 0.4 * limb.getEffectiveness());
                           Vec3 reach = eye.add(player.getLookAngle().scale(maxReachRay));
                           BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
 
                           if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
                               Vec3 gripPoint = hit.getLocation();
                               Vec3 root = getJointRoot(player, limb);
-                              if (root.distanceTo(gripPoint) <= 1.55 - (hypoxiaFactor * 0.2) && limb.targetPos.distanceTo(gripPoint) > 0.08) {
+                              double allowedDist = (1.55 - (hypoxiaFactor * 0.2)) * (0.65 + 0.35 * limb.getEffectiveness());
+                              if (root.distanceTo(gripPoint) <= allowedDist && limb.targetPos.distanceTo(gripPoint) > 0.08) {
                                   limb.startPos = limb.currentPos;
                                   limb.targetPos = gripPoint;
                                   limb.moveProgress = 0.0f;
@@ -590,13 +873,17 @@ jobs:
                   }
 
                   private static boolean tryEngageWall(Player player) {
+                      if (LIMBS[0].fractured && LIMBS[1].fractured) {
+                          player.displayClientMessage(Component.literal("§4[ТРАВМА] Обе руки сломаны! Нажмите B для наложения шины!"), true);
+                          return false;
+                      }
+
                       Vec3 eye = player.getEyePosition();
                       Vec3 forward = Vec3.directionFromRotation(0, player.getYRot());
                       BlockHitResult hit = player.level().clip(new ClipContext(eye, eye.add(forward.scale(1.4)), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
 
                       if (hit.getType() != HitResult.Type.BLOCK) return false;
 
-                      // Фиксируем угол стены по нормали блока
                       Direction face = hit.getDirection();
                       if (face.getAxis().isHorizontal()) {
                           lockedWallYaw = face.getOpposite().toYRot();
@@ -614,7 +901,7 @@ jobs:
                       LIMBS[3].startPos = LIMBS[3].targetPos = LIMBS[3].currentPos = wallHit.add(right.scale(0.25)).add(0, -0.75, 0);
 
                       for (Limb limb : LIMBS) {
-                          limb.locked = true;
+                          limb.locked = !limb.fractured && limb.health >= 20.0f;
                           limb.moveProgress = 1.0f;
                       }
                       return true;
@@ -623,7 +910,7 @@ jobs:
                   private static void disengageClimb(Player player, String reason, boolean isFall) {
                       climbingActive = false;
                       if (isFall) {
-                          fallFlailTicks = 45; // 2.2 секунды анимации паники при падении
+                          fallFlailTicks = 45;
                           player.playSound(SoundEvents.PLAYER_ATTACK_SWEEP, 0.8f, 0.6f);
                       }
                       for (Limb limb : LIMBS) limb.locked = false;
@@ -648,7 +935,6 @@ jobs:
                       Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
                       Vec3 right = wallForward.cross(new Vec3(0, 1, 0)).normalize();
 
-                      // Естественный вектор выноса локтей (в стороны и вниз) и коленей (в стороны и от стены)
                       Vec3 bendDir = right.scale(isLeft ? -0.55 : 0.55)
                               .add(0, isHand ? -0.75 : 0.25, 0)
                               .subtract(wallForward.scale(0.45))
@@ -657,7 +943,7 @@ jobs:
                   }
 
                   // =========================================================================
-                  // 1. АНИМАЦИЯ РУК ОТ ПЕРВОГО ЛИЦА (1ST PERSON PROCEDURAL CLIMBING HANDS)
+                  // 1. АНИМАЦИЯ РУК ОТ ПЕРВОГО ЛИЦА (ВКЛЮЧАЯ ПЕРЕВЯЗКУ И РАНЕНИЯ)
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderHandFirstPerson(RenderHandEvent event) {
@@ -665,9 +951,8 @@ jobs:
                       AbstractClientPlayer player = mc.player;
                       if (player == null) return;
 
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0) return;
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && bandageAnimTicks <= 0) return;
 
-                      // Рисуем обе руки кастомно при обработке главной руки
                       event.setCanceled(true);
                       if (event.getHand() != InteractionHand.MAIN_HAND) return;
 
@@ -679,7 +964,6 @@ jobs:
 
                       PlayerRenderer playerRenderer = (PlayerRenderer) mc.getEntityRenderDispatcher().getRenderer(player);
 
-                      // Рендер левой и правой руки от первого лица
                       renderProceduralFirstPersonArm(poseStack, buffer, light, player, playerRenderer, true, time);
                       renderProceduralFirstPersonArm(poseStack, buffer, light, player, playerRenderer, false, time);
                   }
@@ -691,7 +975,6 @@ jobs:
                       float side = isLeft ? -1.0f : 1.0f;
                       Limb handLimb = isLeft ? LIMBS[0] : LIMBS[1];
 
-                      // Базовое положение рук перед камерой скалолаза
                       double x = side * 0.38;
                       double y = -0.32;
                       double z = -0.52;
@@ -699,26 +982,37 @@ jobs:
                       float yaw = side * 15.0f;
                       float roll = side * -12.0f;
 
-                      if (chalkAnimTicks > 0) {
-                          // Анимация растирания магнезии ладонями перед лицом
+                      if (bandageAnimTicks > 0) {
+                          // Анимация наматывания бинта одной рукой вокруг другой перед грудью
+                          double wrapCircle = Math.sin(time * 1.4) * 0.12;
+                          x = side * 0.14 + (isLeft ? 0.0 : wrapCircle);
+                          y = -0.34 + (isLeft ? 0.0 : Math.cos(time * 1.4) * 0.10);
+                          z = -0.46;
+                          pitch = -45.0f;
+                          yaw = side * -30.0f;
+                      } else if (chalkAnimTicks > 0) {
                           x = side * (0.10 + Math.sin(time * 1.8) * 0.06);
                           y = -0.38 + Math.cos(time * 2.2) * 0.04;
                           z = -0.45;
                           pitch = -35.0f;
                           yaw = side * -35.0f;
                       } else if (pitonAnimTicks > 0 && !isLeft) {
-                          // Анимация забивания страховочного крюка правой рукой
                           float strike = (float) Math.sin(pitonAnimTicks * 0.85f);
                           y = -0.20 + strike * 0.25;
                           z = -0.45 - Math.max(0, strike) * 0.25;
                           pitch = -85.0f + strike * 45.0f;
+                      } else if (handLimb.fractured) {
+                          // Сломанная рука безвольно опущена вниз с вывернутым углом
+                          x = side * 0.42;
+                          y = -0.68;
+                          z = -0.40;
+                          pitch = -15.0f;
+                          roll = side * 28.0f;
                       } else if (fallFlailTicks > 0) {
-                          // Паническое размахивание руками при срыве со скалы
                           y = -0.25 + Math.sin(time * 1.4 + side) * 0.22;
                           x = side * (0.42 + Math.cos(time * 1.1) * 0.12);
                           pitch = -95.0f + (float) Math.sin(time * 1.6 + side) * 35.0f;
                       } else if (hangingOnRope) {
-                          // Руки держатся за натянутую веревку перед грудью и перебирают её при подъеме
                           double climbOffset = Minecraft.getInstance().options.keyJump.isDown() ? Math.sin(time * 0.9 + (isLeft ? 0 : Math.PI)) * 0.14 : 0.0;
                           x = side * 0.12;
                           y = -0.22 + climbOffset;
@@ -726,19 +1020,20 @@ jobs:
                           pitch = -80.0f;
                           yaw = side * -20.0f;
                       } else if (climbingActive) {
-                          // Смещение руки на экране в зависимости от высоты зацепа относительно глаз
                           Vec3 eye = player.getEyePosition(1.0f);
                           double relY = Mth.clamp(handLimb.currentPos.y - eye.y, -0.8, 0.8);
                           double reachZ = (handLimb.moveProgress < 1.0f) ? -Math.sin(handLimb.moveProgress * Math.PI) * 0.22 : 0.0;
 
-                          // Дрожь рук от усталости, ветра и гипоксии
-                          double shake = (stamina < 40f || hypoxiaFactor > 0.4f || isGusting)
-                                  ? Math.sin(time * 1.7 + side) * 0.015 : 0.0;
+                          // Болевой тремор раненой руки
+                          float injuryShakeAmp = (handLimb.bleeding || handLimb.dislocated) ? 0.032f : 0.015f;
+                          double shake = (stamina < 40f || hypoxiaFactor > 0.4f || isGusting || handLimb.health < 80f)
+                                  ? Math.sin(time * 2.1 + side) * injuryShakeAmp : 0.0;
 
                           x += shake;
                           y += relY * 0.35 + shake;
                           z += reachZ;
                           pitch = -75.0f - (float)(relY * 35.0);
+                          if (handLimb.dislocated) roll += side * 22.0f; // Неестественный выворот при вывихе
                       }
 
                       poseStack.translate(x, y, z);
@@ -755,15 +1050,13 @@ jobs:
                   }
 
                   // =========================================================================
-                  // 2. ПОЛНАЯ ПРОЦЕДУРНАЯ АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (F5)
+                  // 2. АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (ВКЛЮЧАЯ ПЕРЕЛОМЫ, ХРОМОТУ И ПЕРЕВЯЗКУ)
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderPlayerPost(RenderPlayerEvent.Post event) {
                       Player player = event.getEntity();
                       if (player != Minecraft.getInstance().player) return;
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0) return;
-
-                      // Подавляем стандартную анимацию ходьбы конечностей
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0 && bandageAnimTicks <= 0) return;
                       player.walkAnimation.setSpeed(0.0f);
                   }
 
@@ -771,16 +1064,41 @@ jobs:
                   public static void onRenderPlayerPre(RenderPlayerEvent.Pre event) {
                       Player player = event.getEntity();
                       if (player != Minecraft.getInstance().player) return;
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0) return;
 
                       PlayerModel<AbstractClientPlayer> model = event.getRenderer().getModel();
                       float pt = event.getPartialTick();
                       float time = player.tickCount + pt;
 
-                      // Блокируем ванильный шаг
+                      // Анимация перевязки на земле или на стене
+                      if (bandageAnimTicks > 0 && !climbingActive) {
+                          model.body.xRot = 0.25f;
+                          model.leftArm.xRot = -1.1f;
+                          model.leftArm.yRot = 0.45f;
+                          model.rightArm.xRot = -1.1f + Mth.sin(time * 1.5f) * 0.35f;
+                          model.rightArm.yRot = -0.55f + Mth.cos(time * 1.5f) * 0.25f;
+                          syncModelLayers(model);
+                          return;
+                      }
+
+                      // Визуализация хромоты и сломанной руки на земле вне скалолазания
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0) {
+                          if (LIMBS[0].fractured) {
+                              model.leftArm.xRot = 0.15f;
+                              model.leftArm.zRot = -0.28f;
+                          }
+                          if (LIMBS[1].fractured) {
+                              model.rightArm.xRot = 0.15f;
+                              model.rightArm.zRot = 0.28f;
+                          }
+                          if (LIMBS[2].fractured || LIMBS[3].fractured) {
+                              model.body.zRot = Mth.sin(time * 0.3f) * 0.15f; // Прихрамывание корпусом
+                          }
+                          syncModelLayers(model);
+                          return;
+                      }
+
                       player.walkAnimation.setSpeed(0.0f);
 
-                      // Состояние 1: Падение / Срыв со стены (Паника в воздухе)
                       if (fallFlailTicks > 0 && !climbingActive && !hangingOnRope) {
                           model.body.xRot = 0.35f;
                           model.leftArm.xRot = -2.4f + Mth.sin(time * 1.5f) * 0.75f;
@@ -794,7 +1112,6 @@ jobs:
                           return;
                       }
 
-                      // Состояние 2: Зависание на страховочной веревке и подъем на жумаре
                       if (hangingOnRope && !climbingActive) {
                           boolean pulling = Minecraft.getInstance().options.keyJump.isDown();
                           float pullCycle = pulling ? Mth.sin(time * 0.7f) * 0.45f : 0.0f;
@@ -815,12 +1132,10 @@ jobs:
                           return;
                       }
 
-                      // Состояние 3: Активное скалолазание (12 процедурных под-состояний)
                       if (climbingActive) {
                           player.yBodyRot = lockedWallYaw;
                           player.yBodyRotO = lockedWallYaw;
 
-                          // Дыхание, гипоксия и перенос веса корпуса (WASD + ветер)
                           float breathFreq = 0.18f + (1.0f - stamina / 100.0f) * 0.35f + hypoxiaFactor * 0.25f;
                           float breathAmp = 0.04f + (1.0f - stamina / 100.0f) * 0.06f;
                           float leanSide = -player.xxa * 0.22f + (float)(currentWind.x * 0.25f);
@@ -830,14 +1145,17 @@ jobs:
                           model.body.zRot = leanSide;
                           model.body.yRot = (LIMBS[0].reaching ? -0.18f : (LIMBS[1].reaching ? 0.18f : 0.0f));
 
-                          // Применяем 3D IK-углы к каждой из 4 конечностей
                           applyLimbIKToModel(player, LIMBS[0], model.leftArm, time);
                           applyLimbIKToModel(player, LIMBS[1], model.rightArm, time);
                           applyLimbIKToModel(player, LIMBS[2], model.leftLeg, time);
                           applyLimbIKToModel(player, LIMBS[3], model.rightLeg, time);
 
-                          // Оверлей анимации нанесения магнезии (руки к мешочку на поясе и растирание)
-                          if (chalkAnimTicks > 0) {
+                          if (bandageAnimTicks > 0) {
+                              model.leftArm.xRot = -1.05f;
+                              model.leftArm.yRot = 0.55f;
+                              model.rightArm.xRot = -1.05f + Mth.sin(time * 1.6f) * 0.35f;
+                              model.rightArm.yRot = -0.55f + Mth.cos(time * 1.6f) * 0.25f;
+                          } else if (chalkAnimTicks > 0) {
                               model.leftArm.xRot = -0.85f + Mth.sin(time * 1.8f) * 0.25f;
                               model.leftArm.yRot = 0.65f;
                               model.leftArm.zRot = 0.25f;
@@ -845,10 +1163,7 @@ jobs:
                               model.rightArm.xRot = -0.85f - Mth.sin(time * 1.8f) * 0.25f;
                               model.rightArm.yRot = -0.65f;
                               model.rightArm.zRot = -0.25f;
-                          }
-
-                          // Оверлей анимации забивания крюка молотком правой рукой
-                          if (pitonAnimTicks > 0) {
+                          } else if (pitonAnimTicks > 0) {
                               float hammerSwing = Mth.sin(pitonAnimTicks * 0.9f);
                               model.rightArm.xRot = -1.9f + hammerSwing * 0.95f;
                               model.rightArm.yRot = -0.15f;
@@ -860,7 +1175,14 @@ jobs:
                   }
 
                   private static void applyLimbIKToModel(Player player, Limb limb, ModelPart part, float time) {
-                      // Если конечность сорвалась и не держит зацеп — анимация поиска опоры / балансирования
+                      // Если конечность сломана — она безвольно висит вниз вдоль скалы
+                      if (limb.fractured) {
+                          part.xRot = 0.08f + Mth.sin(time * 0.2f) * 0.05f;
+                          part.zRot = limb.isLeft ? -0.22f : 0.22f;
+                          part.yRot = limb.isLeft ? 0.35f : -0.35f;
+                          return;
+                      }
+
                       if (!limb.locked) {
                           float balanceWave = Mth.sin(time * 0.45f + (limb.isLeft ? 0.0f : 2.0f));
                           if (limb.isHand) {
@@ -876,7 +1198,6 @@ jobs:
                       }
 
                       Vec3 root = getJointRoot(player, limb);
-                      // Направляем сегмент модели через рассчитанный IK-сустав (локоть/колено) к зацепу
                       Vec3 targetDir = limb.elbowOrKneePos.lerp(limb.currentPos, 0.65).subtract(root).normalize();
 
                       Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
@@ -886,23 +1207,23 @@ jobs:
                       double localUp = targetDir.y;
                       double localSide = targetDir.dot(wallRight);
 
-                      float tremor = (stamina < 35f || hypoxiaFactor > 0.45f)
-                              ? Mth.sin(time * 1.9f + (limb.isLeft ? 0 : 1.5f)) * 0.04f : 0.0f;
+                      float painTremor = (stamina < 35f || hypoxiaFactor > 0.45f || limb.bleeding || limb.dislocated)
+                              ? Mth.sin(time * 2.2f + (limb.isLeft ? 0 : 1.5f)) * 0.06f : 0.0f;
+
+                      float dislocationTwist = limb.dislocated ? (limb.isLeft ? -0.35f : 0.35f) : 0.0f;
 
                       if (limb.isHand) {
-                          part.xRot = (float) (-Math.atan2(localForward, -localUp)) + tremor;
-                          part.zRot = (float) (localSide * 1.15) + (limb.isLeft ? -0.18f : 0.18f);
+                          part.xRot = (float) (-Math.atan2(localForward, -localUp)) + painTremor;
+                          part.zRot = (float) (localSide * 1.15) + (limb.isLeft ? -0.18f : 0.18f) + dislocationTwist;
                           part.yRot = (float) (-localSide * 0.45);
                       } else {
-                          // Сгибание бедра и отведение колена в сторону при постановке стопы на высокий выступ
                           double legLift = Mth.clamp((limb.currentPos.y - player.getY()) * 1.4, -0.4, 1.3);
-                          part.xRot = (float) (-legLift * 1.15 - Math.max(0, localForward * 0.5)) + tremor;
-                          part.zRot = (float) (localSide * 0.85) + (limb.isLeft ? -0.15f : 0.15f);
+                          part.xRot = (float) (-legLift * 1.15 - Math.max(0, localForward * 0.5)) + painTremor;
+                          part.zRot = (float) (localSide * 0.85) + (limb.isLeft ? -0.15f : 0.15f) + dislocationTwist;
                           part.yRot = (float) (limb.isLeft ? -0.2f : 0.2f);
                       }
                   }
 
-                  // Копирование углов на второй слой скина игрока (рукава, штанины, куртка)
                   private static void syncModelLayers(PlayerModel<AbstractClientPlayer> model) {
                       model.jacket.copyFrom(model.body);
                       model.leftSleeve.copyFrom(model.leftArm);
@@ -912,7 +1233,7 @@ jobs:
                   }
 
                   // =========================================================================
-                  // 3. 3D-ВИЗУАЛИЗАЦИЯ ДВУХЗВЕННЫХ СУСТАВОВ (ПЛЕЧО-ЛОКОТЬ-КИСТЬ) И СНАРЯЖЕНИЯ
+                  // 3. 3D-ВИЗУАЛИЗАЦИЯ СУСТАВОВ С ЦВЕТОВОЙ ИНДИКАЦИЕЙ РАНЕНИЙ
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
@@ -931,7 +1252,6 @@ jobs:
                       poseStack.pushPose();
                       poseStack.translate(-cam.x, -cam.y, -cam.z);
 
-                      // Отрисовка крючьев и альпинистской веревки
                       if (!PLACED_PITONS.isEmpty()) {
                           for (int i = 0; i < PLACED_PITONS.size(); i++) {
                               Vec3 piton = PLACED_PITONS.get(i);
@@ -947,27 +1267,24 @@ jobs:
                           drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
                       }
 
-                      // Отрисовка 4 конечностей, сгибов локтей/коленей и костей IK
                       if (climbingActive) {
                           for (Limb limb : LIMBS) {
                               Vec3 root = getJointRoot(player, limb);
                               Vec3 joint = limb.elbowOrKneePos;
                               Vec3 end = limb.currentPos;
 
-                              float r = limb.isHand ? 0.15f : 0.25f;
-                              float g = limb.locked ? 0.95f : 0.25f;
-                              float b = limb.isHand ? 0.95f : 0.35f;
+                              // Цвет конечности отражает её медицинское состояние (Красный = Кровь/Перелом, Оранжевый = Вывих, Зеленый = Здорова)
+                              float r = (limb.fractured || limb.bleeding) ? 1.0f : (limb.dislocated ? 1.0f : 0.15f);
+                              float g = (limb.fractured || limb.bleeding) ? 0.1f : (limb.dislocated ? 0.65f : (limb.locked ? 0.95f : 0.35f));
+                              float b = (limb.fractured || limb.bleeding || limb.dislocated) ? 0.1f : (limb.isHand ? 0.95f : 0.35f);
 
-                              // Точка захвата (кисть / стопа)
                               AABB grip = new AABB(end, end).inflate(0.075);
                               LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
 
-                              // Сустав сгиба (локоть / колено)
                               AABB elbow = new AABB(joint, joint).inflate(0.05);
-                              LevelRenderer.renderLineBox(poseStack, builder, elbow.minX, elbow.minY, elbow.minZ, elbow.maxX, elbow.maxY, elbow.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+                              LevelRenderer.renderLineBox(poseStack, builder, elbow.minX, elbow.minY, elbow.minZ, elbow.maxX, elbow.maxY, elbow.maxZ, r, g, 0.1f, 0.9f);
 
-                              // Отрисовка двух костных сегментов: [Плечо/Бедро -> Локоть/Колено] и [Локоть/Колено -> Кисть/Стопа]
-                              drawBoneSegment(poseStack, builder, root, joint, 0.95f, 0.75f, 0.2f);
+                              drawBoneSegment(poseStack, builder, root, joint, r, g, b);
                               drawBoneSegment(poseStack, builder, joint, end, r, g, b);
                           }
                       }
