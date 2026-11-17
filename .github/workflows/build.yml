@@ -22,6 +22,9 @@ jobs:
 
           mkdir -p mod_build/src/main/java/com/realisticclimbing
           mkdir -p mod_build/src/main/resources/META-INF
+          mkdir -p mod_build/src/main/resources/assets/realisticclimbing/models/item
+          mkdir -p mod_build/src/main/resources/assets/realisticclimbing/lang
+          mkdir -p mod_build/src/main/resources/data/realisticclimbing/recipes
           cd mod_build
 
           cat << 'EOF' > settings.gradle
@@ -39,7 +42,7 @@ jobs:
               id 'net.minecraftforge.gradle' version '[6.0,6.2)'
           }
 
-          version = '1.5.0'
+          version = '1.6.0'
           group = 'com.realisticclimbing'
           base {
               archivesName = 'realisticclimbing-1.20.1'
@@ -75,9 +78,9 @@ jobs:
           license="MIT"
           [[mods]]
           modId="realisticclimbing"
-          version="1.5.0"
+          version="1.6.0"
           displayName="Realistic Climbing Simulator"
-          description="World-Locked 1st Person Hands, Full Procedural IK & Injury System"
+          description="Tarkov-Style Body HUD, Ledge Mantling, Consumable Inventory Medical/Climb Items & 4-Limb IK"
           EOF
 
           cat << 'EOF' > src/main/resources/pack.mcmeta
@@ -89,14 +92,115 @@ jobs:
           }
           EOF
 
+          # Модели предметов (используют встроенные текстуры Minecraft, чтобы всегда отображаться корректно)
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/climbing_bandage.json
+          {
+              "parent": "minecraft:item/generated",
+              "textures": {
+                  "layer0": "minecraft:item/paper"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/chalk_bag.json
+          {
+              "parent": "minecraft:item/generated",
+              "textures": {
+                  "layer0": "minecraft:item/sugar"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/climbing_piton.json
+          {
+              "parent": "minecraft:item/handheld",
+              "textures": {
+                  "layer0": "minecraft:item/tripwire_hook"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/lang/ru_ru.json
+          {
+              "item.realisticclimbing.climbing_bandage": "Перевязочный пакет и шина (ИПП)",
+              "item.realisticclimbing.chalk_bag": "Мешочек с магнезией",
+              "item.realisticclimbing.climbing_piton": "Скальный страховочный крюк"
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/lang/en_us.json
+          {
+              "item.realisticclimbing.climbing_bandage": "Tactical Bandage & Splint",
+              "item.realisticclimbing.chalk_bag": "Climbing Chalk Bag",
+              "item.realisticclimbing.climbing_piton": "Steel Climbing Piton"
+          }
+          EOF
+
+          # Рецепты крафта для выживания
+          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/climbing_bandage.json
+          {
+              "type": "minecraft:crafting_shaped",
+              "pattern": [
+                  "WW",
+                  "SS"
+              ],
+              "key": {
+                  "W": { "tag": "minecraft:wool" },
+                  "S": { "item": "minecraft:stick" }
+              },
+              "result": {
+                  "item": "realisticclimbing:climbing_bandage",
+                  "count": 2
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/chalk_bag.json
+          {
+              "type": "minecraft:crafting_shaped",
+              "pattern": [
+                  "BBB",
+                  " L "
+              ],
+              "key": {
+                  "B": { "item": "minecraft:bone_meal" },
+                  "L": { "item": "minecraft:leather" }
+              },
+              "result": {
+                  "item": "realisticclimbing:chalk_bag",
+                  "count": 1
+              }
+          }
+          EOF
+
+          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/climbing_piton.json
+          {
+              "type": "minecraft:crafting_shaped",
+              "pattern": [
+                  " I",
+                  "NN"
+              ],
+              "key": {
+                  "I": { "item": "minecraft:iron_ingot" },
+                  "N": { "item": "minecraft:iron_nugget" }
+              },
+              "result": {
+                  "item": "realisticclimbing:climbing_piton",
+                  "count": 3
+              }
+          }
+          EOF
+
           cat << 'EOF' > src/main/java/com/realisticclimbing/RealisticClimbingMod.java
           package com.realisticclimbing;
 
+          import com.mojang.blaze3d.systems.RenderSystem;
           import com.mojang.blaze3d.vertex.PoseStack;
           import com.mojang.blaze3d.vertex.VertexConsumer;
           import com.mojang.math.Axis;
           import net.minecraft.client.KeyMapping;
           import net.minecraft.client.Minecraft;
+          import net.minecraft.client.gui.GuiGraphics;
           import net.minecraft.client.model.PlayerModel;
           import net.minecraft.client.model.geom.ModelPart;
           import net.minecraft.client.player.AbstractClientPlayer;
@@ -108,13 +212,22 @@ jobs:
           import net.minecraft.core.Direction;
           import net.minecraft.core.particles.BlockParticleOption;
           import net.minecraft.core.particles.ParticleTypes;
+          import net.minecraft.network.FriendlyByteBuf;
           import net.minecraft.network.chat.Component;
+          import net.minecraft.resources.ResourceLocation;
+          import net.minecraft.server.level.ServerPlayer;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.util.Mth;
           import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.InteractionResultHolder;
           import net.minecraft.world.effect.MobEffectInstance;
           import net.minecraft.world.effect.MobEffects;
+          import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.item.CreativeModeTabs;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraft.world.item.UseAnim;
           import net.minecraft.world.level.ClipContext;
           import net.minecraft.world.level.Level;
           import net.minecraft.world.level.LightLayer;
@@ -126,24 +239,56 @@ jobs:
           import net.minecraft.world.phys.Vec3;
           import net.minecraftforge.api.distmarker.Dist;
           import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+          import net.minecraftforge.client.event.RenderGuiOverlayEvent;
           import net.minecraftforge.client.event.RenderHandEvent;
           import net.minecraftforge.client.event.RenderLevelStageEvent;
           import net.minecraftforge.client.event.RenderPlayerEvent;
+          import net.minecraftforge.client.gui.overlay.VanillaGuiOverlay;
           import net.minecraftforge.common.MinecraftForge;
+          import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
           import net.minecraftforge.event.TickEvent;
+          import net.minecraftforge.eventbus.api.IEventBus;
           import net.minecraftforge.eventbus.api.SubscribeEvent;
           import net.minecraftforge.fml.common.Mod;
           import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
           import net.minecraftforge.fml.loading.FMLEnvironment;
+          import net.minecraftforge.network.NetworkEvent;
+          import net.minecraftforge.network.NetworkRegistry;
+          import net.minecraftforge.network.simple.SimpleChannel;
+          import net.minecraftforge.registries.DeferredRegister;
+          import net.minecraftforge.registries.ForgeRegistries;
+          import net.minecraftforge.registries.RegistryObject;
           import org.joml.Matrix4f;
           import org.lwjgl.glfw.GLFW;
 
           import java.util.ArrayList;
           import java.util.List;
+          import java.util.function.Supplier;
 
           @Mod("realisticclimbing")
           public class RealisticClimbingMod {
               public static final String MOD_ID = "realisticclimbing";
+
+              // Регистрация реальных предметов в инвентаре
+              public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, MOD_ID);
+
+              public static final RegistryObject<Item> CLIMBING_BANDAGE = ITEMS.register("climbing_bandage",
+                      () -> new BandageItem(new Item.Properties().stacksTo(16)));
+
+              public static final RegistryObject<Item> CHALK_BAG = ITEMS.register("chalk_bag",
+                      () -> new ChalkBagItem(new Item.Properties().durability(8)));
+
+              public static final RegistryObject<Item> CLIMBING_PITON = ITEMS.register("climbing_piton",
+                      () -> new PitonItem(new Item.Properties().stacksTo(16)));
+
+              // Сетевой канал для честного списания предметов на сервере при нажатии хоткеев G / V / B
+              private static final String PROTOCOL_VERSION = "1";
+              public static final SimpleChannel NETWORK = NetworkRegistry.newSimpleChannel(
+                      new ResourceLocation(MOD_ID, "main"),
+                      () -> PROTOCOL_VERSION,
+                      PROTOCOL_VERSION::equals,
+                      PROTOCOL_VERSION::equals
+              );
 
               public static KeyMapping KEY_TOGGLE_CLIMB;
               public static KeyMapping KEY_LEFT_HAND;
@@ -158,6 +303,16 @@ jobs:
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
 
+              // Система перелезания на горизонтальную поверхность (Ledge Mantle на Пробел)
+              public static boolean mantlingActive = false;
+              public static int mantleTicks = 0;
+              public static final int MAX_MANTLE_TICKS = 18;
+              public static Vec3 mantleStartPos = Vec3.ZERO;
+              public static Vec3 mantleTargetPos = Vec3.ZERO;
+              public static Vec3 mantleLeftHandPos = Vec3.ZERO;
+              public static Vec3 mantleRightHandPos = Vec3.ZERO;
+
+              // Таймеры процедурных анимаций
               public static int chalkAnimTicks = 0;
               public static int pitonAnimTicks = 0;
               public static int fallFlailTicks = 0;
@@ -165,14 +320,14 @@ jobs:
               public static int bandageAnimTicks = 0;
 
               public static float chalkLevel = 100.0f;
-              public static int chalkUsesLeft = 8;
-              public static int bandagesLeft = 4;
+              public static float headHealth = 100.0f;
+              public static float thoraxHealth = 100.0f;
+              public static float stomachHealth = 100.0f;
               public static float bloodLoss = 0.0f;
               public static double prevFallSpeed = 0.0;
               public static Vec3 lastPitonStrikePos = Vec3.ZERO;
 
               public static final List<Vec3> PLACED_PITONS = new ArrayList<>();
-              public static int pitonsLeft = 5;
               public static boolean hangingOnRope = false;
               public static double maxRopeSlack = 3.8;
 
@@ -186,7 +341,6 @@ jobs:
 
               public static class Limb {
                   public final String name;
-                  public final String shortName;
                   public final boolean isHand;
                   public final boolean isLeft;
                   public boolean locked = false;
@@ -204,9 +358,8 @@ jobs:
                   public boolean dislocated = false;
                   public boolean fractured = false;
 
-                  public Limb(String name, String shortName, boolean isHand, boolean isLeft) {
+                  public Limb(String name, boolean isHand, boolean isLeft) {
                       this.name = name;
-                      this.shortName = shortName;
                       this.isHand = isHand;
                       this.isLeft = isLeft;
                   }
@@ -225,19 +378,155 @@ jobs:
               }
 
               public static final Limb[] LIMBS = new Limb[]{
-                      new Limb("Левая рука", "ЛР", true, true),
-                      new Limb("Правая рука", "ПР", true, false),
-                      new Limb("Левая нога", "ЛН", false, true),
-                      new Limb("Правая нога", "ПН", false, false)
+                      new Limb("Левая рука", true, true),
+                      new Limb("Правая рука", true, false),
+                      new Limb("Левая нога", false, true),
+                      new Limb("Правая нога", false, false)
               };
 
               public RealisticClimbingMod() {
+                  IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
+                  ITEMS.register(modBus);
+                  modBus.addListener(this::addCreativeTabItems);
+
+                  NETWORK.registerMessage(0, PacketConsumeClimbItem.class,
+                          PacketConsumeClimbItem::encode,
+                          PacketConsumeClimbItem::decode,
+                          PacketConsumeClimbItem::handle);
+
                   if (FMLEnvironment.dist == Dist.CLIENT) {
-                      FMLJavaModLoadingContext.get().getModEventBus().addListener(ClientEvents::registerKeys);
+                      modBus.addListener(ClientEvents::registerKeys);
                       MinecraftForge.EVENT_BUS.register(ClientEvents.class);
                   }
               }
 
+              private void addCreativeTabItems(BuildCreativeModeTabContentsEvent event) {
+                  if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES || event.getTabKey() == CreativeModeTabs.COMBAT) {
+                      event.accept(CLIMBING_BANDAGE);
+                      event.accept(CHALK_BAG);
+                      event.accept(CLIMBING_PITON);
+                  }
+              }
+
+              // =========================================================================
+              // РЕАЛЬНЫЕ ПРЕДМЕТЫ В ИНВЕНТАРЕ И СЕТЕВОЙ ПАКЕТ СПИСАНИЯ
+              // =========================================================================
+              public static class BandageItem extends Item {
+                  public BandageItem(Properties props) { super(props); }
+
+                  @Override
+                  public int getUseDuration(ItemStack stack) { return 28; }
+
+                  @Override
+                  public UseAnim getUseAnimation(ItemStack stack) { return UseAnim.BOW; }
+
+                  @Override
+                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+                      ItemStack stack = player.getItemInHand(hand);
+                      if (level.isClientSide && !ClientEvents.hasAnyInjury()) {
+                          return InteractionResultHolder.fail(stack);
+                      }
+                      if (level.isClientSide) {
+                          bandageAnimTicks = 28;
+                      }
+                      player.startUsingItem(hand);
+                      return InteractionResultHolder.consume(stack);
+                  }
+
+                  @Override
+                  public ItemStack finishUsingItem(ItemStack stack, Level level, LivingEntity entity) {
+                      if (entity instanceof Player player) {
+                          if (level.isClientSide) {
+                              ClientEvents.healWorstInjuryClient(player);
+                          }
+                          if (!player.getAbilities().instabuild) {
+                              stack.shrink(1);
+                          }
+                      }
+                      return stack;
+                  }
+              }
+
+              public static class ChalkBagItem extends Item {
+                  public ChalkBagItem(Properties props) { super(props); }
+
+                  @Override
+                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+                      ItemStack stack = player.getItemInHand(hand);
+                      if (level.isClientSide) {
+                          ClientEvents.applyChalkEffectsClient(player);
+                      } else if (!player.getAbilities().instabuild) {
+                          stack.hurtAndBreak(1, player, p -> p.broadcastBreakEvent(hand));
+                      }
+                      return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
+                  }
+              }
+
+              public static class PitonItem extends Item {
+                  public PitonItem(Properties props) { super(props); }
+
+                  @Override
+                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+                      ItemStack stack = player.getItemInHand(hand);
+                      Vec3 eye = player.getEyePosition();
+                      Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
+                      BlockHitResult hit = level.clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+
+                      if (hit.getType() == HitResult.Type.BLOCK) {
+                          if (level.isClientSide) {
+                              ClientEvents.placePitonEffectClient(player, hit.getLocation());
+                          } else if (!player.getAbilities().instabuild) {
+                              stack.shrink(1);
+                          }
+                          return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
+                      }
+                      return InteractionResultHolder.fail(stack);
+                  }
+              }
+
+              public static class PacketConsumeClimbItem {
+                  private final int itemType; // 0 = Бинт, 1 = Магнезия, 2 = Крюк
+
+                  public PacketConsumeClimbItem(int itemType) {
+                      this.itemType = itemType;
+                  }
+
+                  public static void encode(PacketConsumeClimbItem msg, FriendlyByteBuf buf) {
+                      buf.writeInt(msg.itemType);
+                  }
+
+                  public static PacketConsumeClimbItem decode(FriendlyByteBuf buf) {
+                      return new PacketConsumeClimbItem(buf.readInt());
+                  }
+
+                  public static void handle(PacketConsumeClimbItem msg, Supplier<NetworkEvent.Context> ctx) {
+                      ctx.get().enqueueWork(() -> {
+                          ServerPlayer player = ctx.get().getSender();
+                          if (player == null || player.getAbilities().instabuild) return;
+
+                          Item targetItem = msg.itemType == 0 ? CLIMBING_BANDAGE.get()
+                                  : (msg.itemType == 1 ? CHALK_BAG.get() : CLIMBING_PITON.get());
+
+                          for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                              ItemStack stack = player.getInventory().getItem(i);
+                              if (stack.is(targetItem)) {
+                                  if (msg.itemType == 1) {
+                                      stack.hurtAndBreak(1, player, p -> {});
+                                  } else {
+                                      stack.shrink(1);
+                                  }
+                                  player.inventoryMenu.broadcastChanges();
+                                  break;
+                              }
+                          }
+                      });
+                      ctx.get().setPacketHandled(true);
+                  }
+              }
+
+              // =========================================================================
+              // КЛИЕНТСКАЯ ФИЗИКА, MANTLE НА УСТУП И ТАРКОВСКИЙ 3D/GUI ХУД
+              // =========================================================================
               public static class ClientEvents {
                   public static void registerKeys(RegisterKeyMappingsEvent event) {
                       KEY_TOGGLE_CLIMB = new KeyMapping("Вкл/Выкл Скалолазание", GLFW.GLFW_KEY_R, "Realistic Climbing");
@@ -276,22 +565,28 @@ jobs:
                       if (bandageAnimTicks > 0) bandageAnimTicks--;
                       if (fallFlailTicks > 0) {
                           fallFlailTicks--;
-                          if (player.onGround() || climbingActive) fallFlailTicks = 0;
+                          if (player.onGround() || climbingActive || mantlingActive) fallFlailTicks = 0;
                       }
 
                       updateAtmosphereAndWind(player);
                       updateMedicalAndInjuries(player);
 
+                      // Если сейчас выполняется подтягивание и выход силой на горизонтальный уступ (Mantle)
+                      if (mantlingActive) {
+                          updateLedgeMantle(player);
+                          return;
+                      }
+
                       while (KEY_BANDAGE.consumeClick()) {
-                          applyFirstAid(player);
+                          tryUseBandageHotkey(player);
                       }
 
                       while (KEY_USE_CHALK.consumeClick()) {
-                          useChalk(player);
+                          tryUseChalkHotkey(player);
                       }
 
                       while (KEY_PLACE_PITON.consumeClick()) {
-                          placePiton(player);
+                          tryPlacePitonHotkey(player);
                       }
 
                       while (KEY_TOGGLE_CLIMB.consumeClick()) {
@@ -300,12 +595,16 @@ jobs:
                                   climbingActive = true;
                                   hangingOnRope = false;
                                   fallFlailTicks = 0;
-                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Руки теперь жестко привязаны к 3D-зацепам на стене!"), true);
-                              } else {
-                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди ближе к стене!"), true);
                               }
                           } else {
-                              disengageClimb(player, "§eВы отпустили стену", false);
+                              disengageClimb(player, false);
+                          }
+                      }
+
+                      // Позволяем забраться на высокий уступ с земли/прыжка по Пробелу, если руки целы
+                      if (!climbingActive && !player.onGround() && mc.options.keyJump.isDown() && player.zza > 0) {
+                          if (tryStartLedgeMantle(player)) {
+                              return;
                           }
                       }
 
@@ -314,6 +613,13 @@ jobs:
                           stamina = Math.min(100.0f, stamina + Math.max(0.05f, recoveryRate));
                           updateRopeArrestPhysics(player);
                           return;
+                      }
+
+                      // ПРОВЕРКА ПРОБЕЛА НА СТЕНЕ: ЗАБИРАНИЕ НА РОВНУЮ ГОРИЗОНТАЛЬНУЮ ПОВЕРХНОСТЬ (LEDGE MANTLE)
+                      if (mc.options.keyJump.isDown()) {
+                          if (tryStartLedgeMantle(player)) {
+                              return;
+                          }
                       }
 
                       handleLimbInput(player, 0, KEY_LEFT_HAND);
@@ -343,7 +649,6 @@ jobs:
                               float speed = 0.20f * Math.max(0.45f, limb.getEffectiveness());
                               limb.moveProgress = Math.min(1.0f, limb.moveProgress + speed);
                               Vec3 baseLerp = limb.startPos.lerp(limb.targetPos, limb.moveProgress);
-                              // Дуга отрыва конечности на себя от стены при перехвате
                               Vec3 wallOut = Vec3.directionFromRotation(0, lockedWallYaw).scale(-Math.sin(limb.moveProgress * Math.PI) * 0.30);
                               limb.currentPos = baseLerp.add(wallOut);
                               if (limb.moveProgress >= 1.0f) {
@@ -353,7 +658,6 @@ jobs:
                           } else if (limb.locked) {
                               limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.55);
                           } else {
-                              // Если рука/нога не держится за зацеп, она свободно свисает и покачивается у корпуса
                               Vec3 hangOffset = new Vec3(0, limb.isHand ? -0.35 : -0.65, 0);
                               limb.currentPos = limb.currentPos.lerp(rootPos.add(hangOffset), 0.25);
                           }
@@ -388,13 +692,12 @@ jobs:
                                   l.dislocated = true;
                                   l.health = Math.max(25.0f, l.health - 22.0f);
                                   player.playSound(SoundEvents.SKELETON_HURT, 0.9f, 0.65f);
-                                  player.displayClientMessage(Component.literal("§4[ТРАВМА!] Вывих сустава (" + l.name + ") от перегрузки! Нажми B!"), true);
                               }
                           }
                       }
 
                       if (lockedCount < 2 || handsLocked == 0) {
-                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — конечности не выдержали!", true);
+                          disengageClimb(player, true);
                           return;
                       }
 
@@ -421,13 +724,13 @@ jobs:
 
                       if (isGusting && windSpeed > 15.0f && lockedCount <= 2) {
                           player.setDeltaMovement(currentWind.scale(0.85).add(0, -0.2, 0));
-                          disengageClimb(player, "§c[СДУЛО ВЕТРОМ!] Шквальный порыв сорвал вас со скалы!", true);
+                          disengageClimb(player, true);
                           return;
                       }
 
                       if (stamina <= 0.0f || stability < 0.10f) {
                           player.setDeltaMovement(currentWind.scale(0.45));
-                          disengageClimb(player, "§c[СРЫВ!] Силы иссякли от боли и усталости!", true);
+                          disengageClimb(player, true);
                           return;
                       }
 
@@ -474,70 +777,349 @@ jobs:
                       if (isGusting && gustTimer == 58) {
                           player.playSound(SoundEvents.ELYTRA_FLYING, 0.45f, 1.6f);
                       }
-
-                      if (player.tickCount % 4 == 0) {
-                          String windAlert = isGusting ? "§c§lШКВАЛ! " : "";
-                          String limbHud = formatLimbHealthHud();
-                          String hud = String.format(
-                                  "%s§6Сил:%.0f%% §7| %s §7| §fМел:%.0f%% §7| §aБинт:%d §7| §eКрюк:%d",
-                                  windAlert, stamina, limbHud, chalkLevel, bandagesLeft, pitonsLeft
-                          );
-                          player.displayClientMessage(Component.literal(hud), true);
-                      }
                   }
 
-                  private static String formatLimbHealthHud() {
-                      StringBuilder sb = new StringBuilder();
-                      for (int i = 0; i < 4; i++) {
-                          Limb l = LIMBS[i];
-                          String col = "§a";
-                          String tag;
-                          if (l.fractured || l.health < 20f) {
-                              col = "§4§l";
-                              tag = "СЛОМ";
-                          } else if (l.bleeding) {
-                              col = "§c";
-                              tag = "КРОВЬ";
-                          } else if (l.dislocated) {
-                              col = "§6";
-                              tag = "ВЫВИХ";
-                          } else if (l.health < 75f) {
-                              col = "§e";
-                              tag = String.format("%.0f%%", l.health);
-                          } else {
-                              tag = "ОК";
+                  // =========================================================================
+                  // МЕХАНИКА ЗАБИРАНИЯ НА РОВНУЮ ГОРИЗОНТАЛЬНУЮ ПОВЕРХНОСТЬ (MANTLE / VAULT)
+                  // =========================================================================
+                  private static boolean tryStartLedgeMantle(Player player) {
+                      if (LIMBS[0].fractured && LIMBS[1].fractured) return false;
+                      if (stamina < 12.0f) return false;
+
+                      float yaw = climbingActive ? lockedWallYaw : player.getYRot();
+                      Vec3 forward = Vec3.directionFromRotation(0, yaw).normalize();
+                      Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
+                      Level level = player.level();
+
+                      // Ищем горизонтальную полку/вершину стены перед грудью или головой игрока
+                      for (double h = 0.2; h <= 2.3; h += 0.35) {
+                          Vec3 checkWall = player.position().add(0, h, 0).add(forward.scale(0.75));
+                          BlockPos ledgeBlock = BlockPos.containing(checkWall);
+                          BlockState wallState = level.getBlockState(ledgeBlock);
+
+                          if (!wallState.isAir() && wallState.isSolidRender(level, ledgeBlock)) {
+                              BlockPos above1 = ledgeBlock.above();
+                              BlockPos above2 = above1.above();
+                              // Проверяем, что над блоком стены свободно 2 блока для выхода в полный рост
+                              if (!level.getBlockState(above1).isSolidRender(level, above1)
+                                      && !level.getBlockState(above2).isSolidRender(level, above2)) {
+
+                                  mantlingActive = true;
+                                  climbingActive = false;
+                                  hangingOnRope = false;
+                                  mantleTicks = 0;
+                                  lockedWallYaw = yaw;
+                                  mantleStartPos = player.position();
+                                  mantleTargetPos = new Vec3(
+                                          ledgeBlock.getX() + 0.5,
+                                          ledgeBlock.getY() + 1.02,
+                                          ledgeBlock.getZ() + 0.5
+                                  );
+
+                                  // Ставим обе ладони ровно на край горизонтального уступа для упора
+                                  Vec3 edgeCenter = new Vec3(ledgeBlock.getX() + 0.5, ledgeBlock.getY() + 1.0, ledgeBlock.getZ() + 0.5)
+                                          .subtract(forward.scale(0.35));
+                                  mantleLeftHandPos = edgeCenter.add(right.scale(-0.32));
+                                  mantleRightHandPos = edgeCenter.add(right.scale(0.32));
+
+                                  LIMBS[0].currentPos = LIMBS[0].prevPos = mantleLeftHandPos;
+                                  LIMBS[1].currentPos = LIMBS[1].prevPos = mantleRightHandPos;
+
+                                  stamina = Math.max(0.0f, stamina - 10.0f);
+                                  player.playSound(SoundEvents.ARMOR_EQUIP_LEATHER, 0.9f, 0.95f);
+                                  player.playSound(SoundEvents.STONE_STEP, 0.7f, 1.1f);
+                                  return true;
+                              }
                           }
-                          sb.append(col).append(l.shortName).append(":").append(tag);
-                          if (i < 3) sb.append(" ");
                       }
-                      return sb.toString();
+                      return false;
                   }
 
+                  private static void updateLedgeMantle(Player player) {
+                      mantleTicks++;
+                      float t = (float) mantleTicks / MAX_MANTLE_TICKS;
+
+                      // Первые 60% анимации — мощный выход силой вверх на руках, последние 40% — перенос тела вперед на плоскость
+                      double yProgress = Mth.clamp(t * 1.45, 0.0, 1.0);
+                      yProgress = 1.0 - Math.pow(1.0 - yProgress, 2.0); // Ease-out вверх
+                      double xzProgress = Mth.clamp((t - 0.25) / 0.75, 0.0, 1.0);
+
+                      double curX = Mth.lerp(xzProgress, mantleStartPos.x, mantleTargetPos.x);
+                      double curY = Mth.lerp(yProgress, mantleStartPos.y, mantleTargetPos.y);
+                      double curZ = Mth.lerp(xzProgress, mantleStartPos.z, mantleTargetPos.z);
+
+                      Vec3 nextPos = new Vec3(curX, curY, curZ);
+                      player.setDeltaMovement(nextPos.subtract(player.position()));
+                      player.fallDistance = 0.0f;
+
+                      // Ладони остаются прижатыми к кромке уступа во время выхода силой
+                      LIMBS[0].currentPos = mantleLeftHandPos;
+                      LIMBS[1].currentPos = mantleRightHandPos;
+
+                      if (mantleTicks >= MAX_MANTLE_TICKS) {
+                          mantlingActive = false;
+                          player.setPos(mantleTargetPos.x, mantleTargetPos.y, mantleTargetPos.z);
+                          player.setDeltaMovement(Vec3.directionFromRotation(0, lockedWallYaw).scale(0.15));
+                          for (Limb l : LIMBS) l.locked = false;
+                          player.playSound(SoundEvents.STONE_STEP, 0.8f, 1.0f);
+                      }
+                  }
+
+                  // =========================================================================
+                  // ИСПОЛЬЗОВАНИЕ И РЕАЛЬНОЕ СПИСАНИЕ ПРЕДМЕТОВ ИЗ ИНВЕНТАРЯ
+                  // =========================================================================
+                  private static boolean hasItemInInventory(Player player, Item item) {
+                      if (player.getAbilities().instabuild) return true;
+                      for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                          if (player.getInventory().getItem(i).is(item)) return true;
+                      }
+                      return false;
+                  }
+
+                  public static boolean hasAnyInjury() {
+                      if (headHealth < 99f || thoraxHealth < 99f || stomachHealth < 99f) return true;
+                      for (Limb l : LIMBS) {
+                          if (l.bleeding || l.dislocated || l.fractured || l.health < 99f) return true;
+                      }
+                      return false;
+                  }
+
+                  private static void tryUseBandageHotkey(Player player) {
+                      if (!hasAnyInjury()) return;
+                      if (!hasItemInInventory(player, CLIMBING_BANDAGE.get())) {
+                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
+                          return;
+                      }
+                      NETWORK.sendToServer(new PacketConsumeClimbItem(0));
+                      healWorstInjuryClient(player);
+                  }
+
+                  public static void healWorstInjuryClient(Player player) {
+                      bandageAnimTicks = 30;
+                      Limb worstLimb = null;
+                      float lowestScore = 1000.0f;
+
+                      for (Limb l : LIMBS) {
+                          float score = l.health - (l.fractured ? 60f : 0f) - (l.bleeding ? 40f : 0f) - (l.dislocated ? 30f : 0f);
+                          if ((l.bleeding || l.dislocated || l.fractured || l.health < 99.0f) && score < lowestScore) {
+                              lowestScore = score;
+                              worstLimb = l;
+                          }
+                      }
+
+                      if (worstLimb != null) {
+                          boolean hadBoneInjury = worstLimb.fractured || worstLimb.dislocated;
+                          worstLimb.bleeding = false;
+                          worstLimb.dislocated = false;
+                          worstLimb.fractured = false;
+                          worstLimb.health = Math.min(100.0f, Math.max(70.0f, worstLimb.health + 50.0f));
+                          if (hadBoneInjury) player.playSound(SoundEvents.SKELETON_STEP, 0.8f, 0.75f);
+                      } else {
+                          headHealth = Math.min(100.0f, headHealth + 40.0f);
+                          thoraxHealth = Math.min(100.0f, thoraxHealth + 40.0f);
+                          stomachHealth = Math.min(100.0f, stomachHealth + 40.0f);
+                      }
+
+                      bloodLoss = Math.max(0.0f, bloodLoss - 35.0f);
+                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
+                  }
+
+                  private static void tryUseChalkHotkey(Player player) {
+                      if (!hasItemInInventory(player, CHALK_BAG.get())) {
+                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
+                          return;
+                      }
+                      NETWORK.sendToServer(new PacketConsumeClimbItem(1));
+                      applyChalkEffectsClient(player);
+                  }
+
+                  public static void applyChalkEffectsClient(Player player) {
+                      chalkLevel = 100.0f;
+                      chalkAnimTicks = 24;
+                      stamina = Math.min(100.0f, stamina + 8.0f);
+                      player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
+
+                      for (int i = 0; i < 14; i++) {
+                          Vec3 handPos = climbingActive ? LIMBS[i % 2].currentPos : player.getEyePosition().add(player.getLookAngle().scale(0.5));
+                          player.level().addParticle(
+                                  ParticleTypes.CLOUD,
+                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  0.0, 0.03, 0.0
+                          );
+                      }
+                  }
+
+                  private static void tryPlacePitonHotkey(Player player) {
+                      if (!hasItemInInventory(player, CLIMBING_PITON.get())) {
+                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
+                          return;
+                      }
+                      Vec3 eye = player.getEyePosition();
+                      Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
+                      BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+
+                      if (hit.getType() == HitResult.Type.BLOCK) {
+                          NETWORK.sendToServer(new PacketConsumeClimbItem(2));
+                          placePitonEffectClient(player, hit.getLocation());
+                      }
+                  }
+
+                  public static void placePitonEffectClient(Player player, Vec3 pitonPos) {
+                      PLACED_PITONS.add(pitonPos);
+                      lastPitonStrikePos = pitonPos;
+                      pitonAnimTicks = 18;
+                      player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
+
+                      for (int i = 0; i < 10; i++) {
+                          player.level().addParticle(
+                                  ParticleTypes.CRIT,
+                                  pitonPos.x, pitonPos.y, pitonPos.z,
+                                  (player.level().random.nextDouble() - 0.5) * 0.25,
+                                  0.12,
+                                  (player.level().random.nextDouble() - 0.5) * 0.25
+                          );
+                      }
+                  }
+
+                  // =========================================================================
+                  // ТАРКОВСКИЙ ГРАФИЧЕСКИЙ 3D/GUI ХУД ЗДОРОВЬЯ (БЕЗ ТЕКСТА, ЛЕВЫЙ ВЕРХНИЙ УГОЛ)
+                  // =========================================================================
+                  @SubscribeEvent
+                  public static void onRenderGuiOverlay(RenderGuiOverlayEvent.Post event) {
+                      if (event.getOverlay() != VanillaGuiOverlay.HOTBAR.type()) return;
+                      Minecraft mc = Minecraft.getInstance();
+                      if (mc.player == null || mc.options.hideGui) return;
+
+                      GuiGraphics gui = event.getGuiGraphics();
+                      PoseStack pose = gui.pose();
+                      float time = mc.player.tickCount + event.getPartialTick();
+
+                      pose.pushPose();
+                      // Позиция тактического куклы-индикатора как в Escape from Tarkov (левый верхний угол)
+                      pose.translate(12.0f, 12.0f, 0.0f);
+                      // Легкий 3D-наклон карточки для объема
+                      pose.mulPose(Axis.YP.rotationDegrees(8.0f));
+                      pose.mulPose(Axis.ZP.rotationDegrees(-1.5f));
+
+                      // Полупрозрачная темная тактическая подложка с тонкой рамкой
+                      gui.fill(0, 0, 64, 96, 0x950B0E11);
+                      gui.renderOutline(0, 0, 64, 96, isGusting ? 0xFFD93838 : 0x803A444C);
+
+                      // 1. ГОЛОВА (Head)
+                      drawTarkovBodyPart(gui, 26, 6, 12, 12, headHealth, false, false, time);
+
+                      // 2. ГРУДНАЯ КЛЕТКА (Thorax)
+                      drawTarkovBodyPart(gui, 22, 20, 20, 17, thoraxHealth, false, false, time);
+
+                      // 3. ЖИВОТ (Stomach)
+                      drawTarkovBodyPart(gui, 23, 39, 18, 13, stomachHealth, false, false, time);
+
+                      // 4. ЛЕВАЯ РУКА ЭКРАНА -> ПРАВАЯ РУКА ПЕРСОНАЖА (LIMBS[1])
+                      Limb rHand = LIMBS[1];
+                      drawTarkovBodyPart(gui, 9, 20, 11, 30, rHand.health, rHand.bleeding, rHand.fractured || rHand.dislocated, time);
+                      if (rHand.locked && climbingActive) gui.fill(12, 17, 17, 19, 0xFF38E8FF); // Индикатор фиксации хвата
+
+                      // 5. ПРАВАЯ РУКА ЭКРАНА -> ЛЕВАЯ РУКА ПЕРСОНАЖА (LIMBS[0])
+                      Limb lHand = LIMBS[0];
+                      drawTarkovBodyPart(gui, 44, 20, 11, 30, lHand.health, lHand.bleeding, lHand.fractured || lHand.dislocated, time);
+                      if (lHand.locked && climbingActive) gui.fill(47, 17, 52, 19, 0xFF38E8FF);
+
+                      // 6. ЛЕВАЯ НОГА ЭКРАНА -> ПРАВАЯ НОГА ПЕРСОНАЖА (LIMBS[3])
+                      Limb rFoot = LIMBS[3];
+                      drawTarkovBodyPart(gui, 21, 54, 10, 31, rFoot.health, rFoot.bleeding, rFoot.fractured || rFoot.dislocated, time);
+                      if (rFoot.locked && climbingActive) gui.fill(23, 86, 29, 88, 0xFF38E8FF);
+
+                      // 7. ПРАВАЯ НОГА ЭКРАНА -> ЛЕВАЯ НОГА ПЕРСОНАЖА (LIMBS[2])
+                      Limb lFoot = LIMBS[2];
+                      drawTarkovBodyPart(gui, 33, 54, 10, 31, lFoot.health, lFoot.bleeding, lFoot.fractured || lFoot.dislocated, time);
+                      if (lFoot.locked && climbingActive) gui.fill(35, 86, 41, 88, 0xFF38E8FF);
+
+                      // Нижние безтекстовые графические полоски: Стамина (бирюзовая) и Магнезия (белая)
+                      gui.fill(6, 90, 58, 92, 0xFF1A1E24);
+                      int stamW = (int) (52.0f * (stamina / 100.0f));
+                      int stamCol = stamina < 25.0f ? 0xFFE63946 : 0xFF38B6FF;
+                      gui.fill(6, 90, 6 + stamW, 92, stamCol);
+
+                      gui.fill(6, 93, 58, 94, 0xFF1A1E24);
+                      int chalkW = (int) (52.0f * (chalkLevel / 100.0f));
+                      gui.fill(6, 93, 6 + chalkW, 94, 0xFFEAEAEA);
+
+                      pose.popPose();
+                  }
+
+                  // Отрисовка отдельного анатомического сегмента куклы в стиле Escape from Tarkov
+                  private static void drawTarkovBodyPart(GuiGraphics gui, int x, int y, int w, int h,
+                                                         float health, boolean bleeding, boolean fractured, float time) {
+                      int fillColor;
+                      int borderColor;
+
+                      if (fractured && health < 20.0f) {
+                          // Выбитая в 0 ("черная") конечность с багровой рамкой как в Таркове
+                          fillColor = 0xE0080808;
+                          borderColor = 0xFFB81D1D;
+                      } else {
+                          float ratio = Mth.clamp(health / 100.0f, 0.0f, 1.0f);
+                          // Плавный градиент от тарковского зеленого -> желтого -> оранжевого -> красного
+                          int r = (int) (ratio < 0.5f ? 225 : Mth.lerp((ratio - 0.5f) * 2.0f, 230, 55));
+                          int g = (int) (ratio > 0.5f ? 195 : Mth.lerp(ratio * 2.0f, 35, 195));
+                          int b = 45;
+                          fillColor = (0xB8 << 24) | (r << 16) | (g << 8) | b;
+                          borderColor = (0xFF << 24) | (Math.min(255, r + 30) << 16) | (Math.min(255, g + 30) << 8) | (b + 20);
+                      }
+
+                      // Если открыто кровотечение — сегмент тревожно пульсирует красным
+                      if (bleeding && ((int)(time * 0.25f) % 2 == 0)) {
+                          borderColor = 0xFFFF1E1E;
+                      }
+
+                      gui.fill(x, y, x + w, y + h, fillColor);
+                      gui.renderOutline(x, y, w, h, borderColor);
+
+                      int cx = x + w / 2;
+                      int cy = y + h / 2;
+
+                      // Графическая иконка кровотечения (красная капля без текста)
+                      if (bleeding) {
+                          gui.fill(cx - 1, cy - 4, cx + 1, cy - 2, 0xFFFF1111);
+                          gui.fill(cx - 2, cy - 2, cx + 2, cy + 2, 0xFFFF1111);
+                          gui.fill(cx - 1, cy + 2, cx + 1, cy + 3, 0xFFAA0000);
+                      }
+
+                      // Графическая иконка перелома/вывиха (белая зигзагообразная трещина кости)
+                      if (fractured) {
+                          gui.fill(cx - 3, cy - 3, cx, cy - 1, 0xFFFFFFFF);
+                          gui.fill(cx - 1, cy - 1, cx + 2, cy + 1, 0xFFDADADA);
+                          gui.fill(cx, cy + 1, cx + 3, cy + 3, 0xFFFFFFFF);
+                      }
+                  }
+
+                  // =========================================================================
+                  // ОБНОВЛЕНИЕ МЕДИЦИНЫ И УРОНА КОНЕЧНОСТЯМ
+                  // =========================================================================
                   private static void updateMedicalAndInjuries(Player player) {
                       double vy = player.getDeltaMovement().y;
 
-                      if (player.onGround() && !climbingActive) {
+                      if (player.onGround() && !climbingActive && !mantlingActive) {
                           if (prevFallSpeed < -0.68) {
                               double impact = Math.abs(prevFallSpeed);
                               inflictFallImpactInjuries(player, impact);
                           }
-                          if (!PLACED_PITONS.isEmpty() || pitonsLeft < 5 || chalkUsesLeft < 8 || bandagesLeft < 4) {
+                          if (!PLACED_PITONS.isEmpty()) {
                               PLACED_PITONS.clear();
-                              pitonsLeft = 5;
-                              chalkUsesLeft = 8;
-                              bandagesLeft = 4;
                               hangingOnRope = false;
                           }
                       }
 
-                      if (!climbingActive && player.horizontalCollision && player.getDeltaMovement().horizontalDistance() > 0.38) {
+                      if (!climbingActive && !mantlingActive && player.horizontalCollision && player.getDeltaMovement().horizontalDistance() > 0.38) {
                           Limb randomSideLimb = LIMBS[player.level().random.nextInt(4)];
                           randomSideLimb.health = Math.max(15.0f, randomSideLimb.health - 28.0f);
                           randomSideLimb.bleeding = true;
                           if (randomSideLimb.health < 25.0f) randomSideLimb.fractured = true;
+                          thoraxHealth = Math.max(30.0f, thoraxHealth - 15.0f);
                           spawnBloodParticles(player, randomSideLimb.currentPos.equals(Vec3.ZERO) ? player.position().add(0, 1, 0) : randomSideLimb.currentPos, 12);
                           player.playSound(SoundEvents.PLAYER_HURT, 0.9f, 0.8f);
-                          player.displayClientMessage(Component.literal("§4[УДАР О СКАЛУ!] Повреждена " + randomSideLimb.name + "! Открылось кровотечение!"), true);
                       }
 
                       prevFallSpeed = vy;
@@ -546,26 +1128,30 @@ jobs:
                       for (Limb limb : LIMBS) {
                           if (limb.bleeding) {
                               bleedingCount++;
-                              limb.health = Math.max(10.0f, limb.health - 0.035f);
+                              limb.health = Math.max(5.0f, limb.health - 0.035f);
                               if (player.tickCount % 8 == 0) {
                                   Vec3 bleedPos = climbingActive ? limb.currentPos : getJointRoot(player, limb, 1.0f);
                                   spawnBloodParticles(player, bleedPos, 3);
                               }
                           } else if (limb.health < 100.0f && !limb.fractured && !limb.dislocated) {
-                              limb.health = Math.min(100.0f, limb.health + 0.02f);
+                              limb.health = Math.min(100.0f, limb.health + 0.015f);
                           }
                       }
 
                       if (bleedingCount > 0) {
                           bloodLoss = Math.min(100.0f, bloodLoss + bleedingCount * 0.045f);
+                          thoraxHealth = Math.max(20.0f, thoraxHealth - bleedingCount * 0.01f);
                           if (player.tickCount % 80 == 0) {
                               player.hurt(player.damageSources().generic(), 1.0f);
                           }
                       } else {
                           bloodLoss = Math.max(0.0f, bloodLoss - 0.06f);
+                          thoraxHealth = Math.min(100.0f, thoraxHealth + 0.02f);
+                          headHealth = Math.min(100.0f, headHealth + 0.02f);
+                          stomachHealth = Math.min(100.0f, stomachHealth + 0.02f);
                       }
 
-                      if (player.onGround() && !climbingActive) {
+                      if (player.onGround() && !climbingActive && !mantlingActive) {
                           float legPenalty = 1.0f;
                           if (LIMBS[2].fractured || LIMBS[2].dislocated) legPenalty -= 0.35f;
                           if (LIMBS[3].fractured || LIMBS[3].dislocated) legPenalty -= 0.35f;
@@ -581,28 +1167,27 @@ jobs:
                   }
 
                   private static void inflictLimbRipInjury(Player player, Limb limb) {
-                      limb.health = Math.max(15.0f, limb.health - 18.0f);
+                      limb.health = Math.max(12.0f, limb.health - 22.0f);
                       limb.bleeding = true;
                       if (limb.health <= 20.0f) limb.fractured = true;
                       spawnBloodParticles(player, limb.currentPos, 10);
                       player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 1.1f);
-                      player.displayClientMessage(Component.literal("§c[РАНЕНИЕ!] " + limb.name + " сорвалась с камня! Сорвана кожа (нажми B)!"), true);
                   }
 
                   private static void inflictSkinAbrasion(Player player, Limb limb) {
-                      limb.health = Math.max(25.0f, limb.health - 12.0f);
+                      limb.health = Math.max(20.0f, limb.health - 15.0f);
                       limb.bleeding = true;
                       spawnBloodParticles(player, limb.currentPos, 8);
                       player.playSound(SoundEvents.PLAYER_HURT, 0.65f, 1.25f);
-                      player.displayClientMessage(Component.literal("§c[ССАДИНА!] " + limb.name + " соскользнула по камню! Ладонь в крови (G - Мел, B - Бинт)!"), true);
                   }
 
                   private static void inflictFallImpactInjuries(Player player, double impactSpeed) {
-                      float dmg = (float) ((impactSpeed - 0.62) * 85.0);
+                      float dmg = (float) ((impactSpeed - 0.62) * 90.0);
                       if (dmg <= 8.0f) return;
 
-                      LIMBS[2].health = Math.max(5.0f, LIMBS[2].health - dmg);
-                      LIMBS[3].health = Math.max(5.0f, LIMBS[3].health - dmg * 0.9f);
+                      LIMBS[2].health = Math.max(0.0f, LIMBS[2].health - dmg);
+                      LIMBS[3].health = Math.max(0.0f, LIMBS[3].health - dmg * 0.9f);
+                      stomachHealth = Math.max(25.0f, stomachHealth - dmg * 0.4f);
 
                       if (LIMBS[2].health < 25.0f) {
                           LIMBS[2].fractured = true;
@@ -621,49 +1206,6 @@ jobs:
                       spawnBloodParticles(player, player.position().add(0, 0.3, 0), 18);
                       player.playSound(SoundEvents.SKELETON_HURT, 1.0f, 0.55f);
                       player.playSound(SoundEvents.PLAYER_BIG_FALL, 1.0f, 0.8f);
-                      player.displayClientMessage(Component.literal("§4§l[ПЕРЕЛОМ НОГ!] Жесткое падение повредило ноги! Нажми B для наложения шины!"), true);
-                  }
-
-                  private static void applyFirstAid(Player player) {
-                      Limb worstLimb = null;
-                      float lowestScore = 100.0f;
-
-                      for (Limb l : LIMBS) {
-                          float score = l.health - (l.fractured ? 50f : 0f) - (l.bleeding ? 35f : 0f) - (l.dislocated ? 25f : 0f);
-                          if ((l.bleeding || l.dislocated || l.fractured || l.health < 90.0f) && score < lowestScore) {
-                              lowestScore = score;
-                              worstLimb = l;
-                          }
-                      }
-
-                      if (worstLimb == null) {
-                          player.displayClientMessage(Component.literal("§a[Медицина] Все конечности здоровы!"), true);
-                          return;
-                      }
-
-                      if (bandagesLeft <= 0) {
-                          player.displayClientMessage(Component.literal("§c[Медицина] Бинты и шины закончились! Спуститесь на землю."), true);
-                          return;
-                      }
-
-                      bandagesLeft--;
-                      bandageAnimTicks = 30;
-
-                      boolean wasFracturedOrDislocated = worstLimb.fractured || worstLimb.dislocated;
-                      worstLimb.bleeding = false;
-                      worstLimb.dislocated = false;
-                      worstLimb.fractured = false;
-                      worstLimb.health = Math.min(100.0f, Math.max(65.0f, worstLimb.health + 45.0f));
-                      bloodLoss = Math.max(0.0f, bloodLoss - 30.0f);
-
-                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
-                      if (wasFracturedOrDislocated) {
-                          player.playSound(SoundEvents.SKELETON_STEP, 0.8f, 0.75f);
-                      }
-
-                      player.displayClientMessage(Component.literal(
-                              "§a[Медицина] " + worstLimb.name + " перевязана и зафиксирована шиной! (Бинтов: " + bandagesLeft + ")"
-                      ), true);
                   }
 
                   private static void spawnBloodParticles(Player player, Vec3 pos, int count) {
@@ -676,62 +1218,6 @@ jobs:
                                   pos.z + (player.level().random.nextDouble() - 0.5) * 0.25,
                                   0.0, -0.08, 0.0
                           );
-                      }
-                  }
-
-                  private static void useChalk(Player player) {
-                      if (chalkUsesLeft <= 0) {
-                          player.displayClientMessage(Component.literal("§c[Магнезия] Мешочек пуст! Спуститесь на землю."), true);
-                          return;
-                      }
-                      chalkUsesLeft--;
-                      chalkLevel = 100.0f;
-                      chalkAnimTicks = 24;
-                      stamina = Math.min(100.0f, stamina + 8.0f);
-                      player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
-
-                      for (int i = 0; i < 14; i++) {
-                          Vec3 handPos = climbingActive ? LIMBS[i % 2].currentPos : player.getEyePosition().add(player.getLookAngle().scale(0.5));
-                          player.level().addParticle(
-                                  ParticleTypes.CLOUD,
-                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  0.0, 0.03, 0.0
-                          );
-                      }
-                      player.displayClientMessage(Component.literal("§f[Магнезия] Руки обработаны мелом! Сцепление 100% (Осталось: " + chalkUsesLeft + ")"), true);
-                  }
-
-                  private static void placePiton(Player player) {
-                      if (pitonsLeft <= 0) {
-                          player.displayClientMessage(Component.literal("§c[Страховка] Закончились крючья! (0/5)"), true);
-                          return;
-                      }
-                      Vec3 eye = player.getEyePosition();
-                      Vec3 reach = eye.add(player.getLookAngle().scale(2.0));
-                      BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
-                      if (hit.getType() == HitResult.Type.BLOCK) {
-                          Vec3 pitonPos = hit.getLocation();
-                          PLACED_PITONS.add(pitonPos);
-                          lastPitonStrikePos = pitonPos;
-                          pitonsLeft--;
-                          pitonAnimTicks = 18;
-                          player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
-
-                          for (int i = 0; i < 10; i++) {
-                              player.level().addParticle(
-                                      ParticleTypes.CRIT,
-                                      pitonPos.x, pitonPos.y, pitonPos.z,
-                                      (player.level().random.nextDouble() - 0.5) * 0.25,
-                                      0.12,
-                                      (player.level().random.nextDouble() - 0.5) * 0.25
-                              );
-                          }
-                          player.displayClientMessage(Component.literal("§e[Страховка] Крюк вбит в скалу! (Осталось: " + pitonsLeft + ")"), true);
-                      } else {
-                          player.displayClientMessage(Component.literal("§c[Страховка] Наведи прицел на скалу!"), true);
                       }
                   }
 
@@ -751,10 +1237,8 @@ jobs:
                               if (player.getDeltaMovement().y < -0.95) {
                                   LIMBS[2].dislocated = true;
                                   LIMBS[2].health = Math.max(30.0f, LIMBS[2].health - 20.0f);
+                                  stomachHealth = Math.max(40.0f, stomachHealth - 20.0f);
                                   player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 0.9f);
-                                  player.displayClientMessage(Component.literal("§6[ЖЕСТКИЙ РЫВОК СТРАХОВКИ!] Вывихнуто бедро (нажми B)!"), true);
-                              } else {
-                                  player.displayClientMessage(Component.literal("§a[СТРАХОВКА СРАБОТАЛА!] Веревка удержала срыв! Жми ПРОБЕЛ или R"), true);
                               }
                           }
 
@@ -781,6 +1265,7 @@ jobs:
                       double altAboveSea = Math.max(0.0, y - 64.0);
                       pressureKPa = (float) Mth.clamp(101.3 * Math.exp(-altAboveSea / 260.0), 38.0, 101.3);
                       hypoxiaFactor = (float) Mth.clamp((y - 85.0) / 190.0, 0.0, 1.0);
+                      if (hypoxiaFactor > 0.7f) headHealth = Math.max(45.0f, headHealth - 0.01f);
 
                       BlockPos eyePos = BlockPos.containing(player.getEyePosition());
                       int skyLight = level.getBrightness(LightLayer.SKY, eyePos);
@@ -823,10 +1308,7 @@ jobs:
                   private static void handleLimbInput(Player player, int index, KeyMapping key) {
                       Limb limb = LIMBS[index];
                       if (key.isDown()) {
-                          if (limb.fractured || limb.health < 20.0f) {
-                              player.displayClientMessage(Component.literal("§4[ОТКАЗ!] " + limb.name + " сломана! Нажми B для шины!"), true);
-                              return;
-                          }
+                          if (limb.fractured || limb.health < 20.0f) return;
 
                           limb.reaching = true;
                           Vec3 eye = player.getEyePosition();
@@ -853,10 +1335,7 @@ jobs:
                   }
 
                   private static boolean tryEngageWall(Player player) {
-                      if (LIMBS[0].fractured && LIMBS[1].fractured) {
-                          player.displayClientMessage(Component.literal("§4[ТРАВМА] Обе руки сломаны! Нажмите B для наложения шины!"), true);
-                          return false;
-                      }
+                      if (LIMBS[0].fractured && LIMBS[1].fractured) return false;
 
                       Vec3 eye = player.getEyePosition();
                       Vec3 forward = Vec3.directionFromRotation(0, player.getYRot());
@@ -887,18 +1366,17 @@ jobs:
                       return true;
                   }
 
-                  private static void disengageClimb(Player player, String reason, boolean isFall) {
+                  private static void disengageClimb(Player player, boolean isFall) {
                       climbingActive = false;
                       if (isFall) {
                           fallFlailTicks = 45;
                           player.playSound(SoundEvents.PLAYER_ATTACK_SWEEP, 0.8f, 0.6f);
                       }
                       for (Limb limb : LIMBS) limb.locked = false;
-                      player.displayClientMessage(Component.literal(reason), true);
                   }
 
                   private static Vec3 getJointRoot(Player player, Limb limb, float partialTick) {
-                      Vec3 forward = Vec3.directionFromRotation(0, climbingActive ? lockedWallYaw : player.getViewYRot(partialTick));
+                      Vec3 forward = Vec3.directionFromRotation(0, (climbingActive || mantlingActive) ? lockedWallYaw : player.getViewYRot(partialTick));
                       Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
                       double sideOffset = limb.isLeft ? -0.28 : 0.28;
                       double heightOffset = limb.isHand ? 1.32 : 0.72;
@@ -923,7 +1401,7 @@ jobs:
                   }
 
                   // =========================================================================
-                  // 1. ЧЕСТНАЯ 3D-ПРИВЯЗКА РУК ОТ ПЕРВОГО ЛИЦА К МИРОВЫМ ЗАЦЕПАМ (WORLD-SPACE HANDS)
+                  // 1. РЕНДЕР РУК ОТ ПЕРВОГО ЛИЦА (ПРИВЯЗКА К 3D-МИРУ + ВЫХОД НА УСТУП MANTLE)
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderHandFirstPerson(RenderHandEvent event) {
@@ -931,7 +1409,7 @@ jobs:
                       AbstractClientPlayer player = mc.player;
                       if (player == null) return;
 
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && bandageAnimTicks <= 0) return;
+                      if (!climbingActive && !mantlingActive && !hangingOnRope && fallFlailTicks <= 0 && bandageAnimTicks <= 0) return;
 
                       event.setCanceled(true);
                       if (event.getHand() != InteractionHand.MAIN_HAND) return;
@@ -954,8 +1432,7 @@ jobs:
                       float side = isLeft ? -1.0f : 1.0f;
                       Limb handLimb = isLeft ? LIMBS[0] : LIMBS[1];
 
-                      // СПЕЦ-ДЕЙСТВИЯ ПЕРЕД ЛИЦОМ (Перевязка бинтом, Магнезия, Срыв в воздухе, Висение на веревке)
-                      if (bandageAnimTicks > 0 || chalkAnimTicks > 0 || (!climbingActive && (fallFlailTicks > 0 || hangingOnRope))) {
+                      if (bandageAnimTicks > 0 || chalkAnimTicks > 0 || (!climbingActive && !mantlingActive && (fallFlailTicks > 0 || hangingOnRope))) {
                           poseStack.pushPose();
                           double x = side * 0.35, y = -0.32, z = -0.50;
                           float pitch = -65.0f, yaw = side * 15.0f, roll = side * -12.0f;
@@ -996,18 +1473,16 @@ jobs:
                           return;
                       }
 
-                      // ОСНОВНОЙ ГЕЙМПЛЕЙ ЛАЗАНИЯ: РУКА ЖЕСТКО ПРИВЯЗАНА К 3D-МИРОВОЙ КООРДИНАТЕ КОНЕЧНОСТИ!
+                      // 3D-привязка рук к точкам опоры на скале или кромке уступа при выходе силой (Mantle)
                       Vec3 eyePos = player.getEyePosition(pt);
                       Vec3 shoulderWorld = getJointRoot(player, handLimb, pt);
-                      Vec3 handWorld = handLimb.getRenderPos(pt);
+                      Vec3 handWorld = mantlingActive ? (isLeft ? mantleLeftHandPos : mantleRightHandPos) : handLimb.getRenderPos(pt);
 
-                      // Если бьем молотком по крюку правой рукой — рука бьет именно в мировую точку крюка
                       if (pitonAnimTicks > 0 && !isLeft && !lastPitonStrikePos.equals(Vec3.ZERO)) {
                           double strikeWave = Math.sin(pitonAnimTicks * 0.9);
                           handWorld = lastPitonStrikePos.add(player.getLookAngle().scale(-Math.max(0, strikeWave) * 0.25));
                       }
 
-                      // Болевой и высотный тремор самой конечности в мире
                       if (stamina < 40f || hypoxiaFactor > 0.4f || isGusting || handLimb.bleeding || handLimb.dislocated) {
                           double amp = (handLimb.bleeding || handLimb.dislocated) ? 0.022 : 0.010;
                           handWorld = handWorld.add(
@@ -1017,11 +1492,9 @@ jobs:
                           );
                       }
 
-                      // Вычисляем положение предплечья в мире (между IK-локтем и кистью на зацепе)
                       Vec3 armOriginWorld = shoulderWorld.lerp(handWorld, 0.58);
                       Vec3 relToEye = armOriginWorld.subtract(eyePos);
 
-                      // Вектор направления самой руки в мире (от плеча/локтя к точке захвата на камне)
                       Vec3 armDirWorld = handWorld.subtract(shoulderWorld);
                       if (armDirWorld.lengthSqr() < 0.001) armDirWorld = new Vec3(0, 1, 0);
                       armDirWorld = armDirWorld.normalize();
@@ -1033,42 +1506,29 @@ jobs:
                       float camPitch = player.getViewXRot(pt);
 
                       poseStack.pushPose();
-
-                      // Переводим из экранного пространства камеры в мировое пространство вокруг глаз игрока
                       poseStack.mulPose(Axis.XP.rotationDegrees(camPitch));
                       poseStack.mulPose(Axis.YP.rotationDegrees(camYaw + 180.0f));
-
-                      // Смещаем руку в её реальную 3D-позицию между плечом и зацепом на скале
                       poseStack.translate(relToEye.x, relToEye.y, relToEye.z);
-
-                      // Поворачиваем модель руки строго по 3D-вектору от плеча к точке захвата
                       poseStack.mulPose(Axis.YP.rotationDegrees(-armYawWorld));
                       poseStack.mulPose(Axis.XP.rotationDegrees(armPitchWorld - 90.0f));
 
-                      // При вывихе сустава рука неестественно вывернута вокруг своей оси
                       float twistRoll = handLimb.dislocated ? side * 32.0f : side * -10.0f;
                       poseStack.mulPose(Axis.ZP.rotationDegrees(twistRoll));
-
-                      // Масштабируем сегмент, чтобы кисть визуально лежала прямо на зацепе
                       poseStack.scale(0.85f, 1.15f, 0.85f);
 
-                      if (isLeft) {
-                          renderer.renderLeftHand(poseStack, buffer, light, player);
-                      } else {
-                          renderer.renderRightHand(poseStack, buffer, light, player);
-                      }
-
+                      if (isLeft) renderer.renderLeftHand(poseStack, buffer, light, player);
+                      else renderer.renderRightHand(poseStack, buffer, light, player);
                       poseStack.popPose();
                   }
 
                   // =========================================================================
-                  // 2. АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (F5)
+                  // 2. АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (ВКЛЮЧАЯ ВЫХОД СИЛОЙ НА УСТУП MANTLE)
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderPlayerPost(RenderPlayerEvent.Post event) {
                       Player player = event.getEntity();
                       if (player != Minecraft.getInstance().player) return;
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0 && bandageAnimTicks <= 0) return;
+                      if (!climbingActive && !mantlingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0 && bandageAnimTicks <= 0) return;
                       player.walkAnimation.setSpeed(0.0f);
                   }
 
@@ -1080,6 +1540,27 @@ jobs:
                       PlayerModel<AbstractClientPlayer> model = event.getRenderer().getModel();
                       float pt = event.getPartialTick();
                       float time = player.tickCount + pt;
+
+                      // Анимация выхода силой на горизонтальный уступ (Ledge Mantle)
+                      if (mantlingActive) {
+                          player.walkAnimation.setSpeed(0.0f);
+                          player.yBodyRot = lockedWallYaw;
+                          player.yBodyRotO = lockedWallYaw;
+                          float progress = (mantleTicks + pt) / MAX_MANTLE_TICKS;
+
+                          // Корпус сильно наклоняется вперед над уступом, руки отжимаются вниз от кромки камня
+                          model.body.xRot = (float) Math.sin(progress * Math.PI) * 0.65f;
+                          model.leftArm.xRot = -1.8f + progress * 1.9f;
+                          model.leftArm.zRot = -0.25f;
+                          model.rightArm.xRot = -1.8f + progress * 1.9f;
+                          model.rightArm.zRot = 0.25f;
+
+                          // Ноги подтягиваются коленями к груди для постановки стоп на крышу
+                          model.leftLeg.xRot = -1.1f * (float) Math.sin(progress * Math.PI);
+                          model.rightLeg.xRot = -0.8f * (float) Math.sin(progress * Math.PI);
+                          syncModelLayers(model);
+                          return;
+                      }
 
                       if (bandageAnimTicks > 0 && !climbingActive) {
                           model.body.xRot = 0.25f;
@@ -1247,7 +1728,7 @@ jobs:
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
                       if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
-                      if (!climbingActive && PLACED_PITONS.isEmpty()) return;
+                      if (!climbingActive && !mantlingActive && PLACED_PITONS.isEmpty()) return;
 
                       Minecraft mc = Minecraft.getInstance();
                       Player player = mc.player;
@@ -1277,10 +1758,11 @@ jobs:
                           drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
                       }
 
-                      if (climbingActive) {
+                      if (climbingActive || mantlingActive) {
                           for (Limb limb : LIMBS) {
+                              if (mantlingActive && !limb.isHand) continue;
                               Vec3 root = getJointRoot(player, limb, pt);
-                              Vec3 end = limb.getRenderPos(pt);
+                              Vec3 end = mantlingActive ? (limb.isLeft ? mantleLeftHandPos : mantleRightHandPos) : limb.getRenderPos(pt);
                               Vec3 joint = solveTwoBoneIK(root, end, limb.isHand, limb.isLeft);
 
                               float r = (limb.fractured || limb.bleeding) ? 1.0f : (limb.dislocated ? 1.0f : 0.15f);
