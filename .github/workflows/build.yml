@@ -42,7 +42,7 @@ jobs:
               id 'net.minecraftforge.gradle' version '[6.0,6.2)'
           }
 
-          version = '1.7.0'
+          version = '1.8.0'
           group = 'com.realisticclimbing'
           base {
               archivesName = 'realisticclimbing-1.20.1'
@@ -78,9 +78,9 @@ jobs:
           license="MIT"
           [[mods]]
           modId="realisticclimbing"
-          version="1.7.0"
+          version="1.8.0"
           displayName="Realistic Climbing Simulator"
-          description="Stylized Surface Grip HUD, Tarkov Bio-Scanner, Ledge Mantling & 4-Limb IK"
+          description="Medical Bandage/Splint Minigames, Summit Flagpole, RPG Compass & Altimeter HUD"
           EOF
 
           cat << 'EOF' > src/main/resources/pack.mcmeta
@@ -119,11 +119,21 @@ jobs:
           }
           EOF
 
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/summit_flagpole.json
+          {
+              "parent": "minecraft:item/handheld",
+              "textures": {
+                  "layer0": "minecraft:item/blaze_rod"
+              }
+          }
+          EOF
+
           cat << 'EOF' > src/main/resources/assets/realisticclimbing/lang/ru_ru.json
           {
               "item.realisticclimbing.climbing_bandage": "Перевязочный пакет и шина (ИПП)",
               "item.realisticclimbing.chalk_bag": "Мешочек с магнезией",
-              "item.realisticclimbing.climbing_piton": "Скальный страховочный крюк"
+              "item.realisticclimbing.climbing_piton": "Скальный страховочный крюк",
+              "item.realisticclimbing.summit_flagpole": "Флагшток покорителя вершины"
           }
           EOF
 
@@ -131,7 +141,8 @@ jobs:
           {
               "item.realisticclimbing.climbing_bandage": "Tactical Bandage & Splint",
               "item.realisticclimbing.chalk_bag": "Climbing Chalk Bag",
-              "item.realisticclimbing.climbing_piton": "Steel Climbing Piton"
+              "item.realisticclimbing.climbing_piton": "Steel Climbing Piton",
+              "item.realisticclimbing.summit_flagpole": "Summit Conquer Flagpole"
           }
           EOF
 
@@ -189,6 +200,25 @@ jobs:
           }
           EOF
 
+          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/summit_flagpole.json
+          {
+              "type": "minecraft:crafting_shaped",
+              "pattern": [
+                  "SW",
+                  "S ",
+                  "S "
+              ],
+              "key": {
+                  "W": { "tag": "minecraft:wool" },
+                  "S": { "item": "minecraft:stick" }
+              },
+              "result": {
+                  "item": "realisticclimbing:summit_flagpole",
+                  "count": 1
+              }
+          }
+          EOF
+
           cat << 'EOF' > src/main/java/com/realisticclimbing/RealisticClimbingMod.java
           package com.realisticclimbing;
 
@@ -198,6 +228,7 @@ jobs:
           import net.minecraft.client.KeyMapping;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.gui.GuiGraphics;
+          import net.minecraft.client.gui.screens.Screen;
           import net.minecraft.client.model.PlayerModel;
           import net.minecraft.client.model.geom.ModelPart;
           import net.minecraft.client.player.AbstractClientPlayer;
@@ -209,6 +240,7 @@ jobs:
           import net.minecraft.core.particles.BlockParticleOption;
           import net.minecraft.core.particles.ParticleTypes;
           import net.minecraft.network.FriendlyByteBuf;
+          import net.minecraft.network.chat.Component;
           import net.minecraft.resources.ResourceLocation;
           import net.minecraft.server.level.ServerPlayer;
           import net.minecraft.sounds.SoundEvents;
@@ -217,12 +249,10 @@ jobs:
           import net.minecraft.world.InteractionResultHolder;
           import net.minecraft.world.effect.MobEffectInstance;
           import net.minecraft.world.effect.MobEffects;
-          import net.minecraft.world.entity.LivingEntity;
           import net.minecraft.world.entity.player.Player;
           import net.minecraft.world.item.CreativeModeTabs;
           import net.minecraft.world.item.Item;
           import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.item.UseAnim;
           import net.minecraft.world.level.ClipContext;
           import net.minecraft.world.level.Level;
           import net.minecraft.world.level.LightLayer;
@@ -274,6 +304,9 @@ jobs:
               public static final RegistryObject<Item> CLIMBING_PITON = ITEMS.register("climbing_piton",
                       () -> new PitonItem(new Item.Properties().stacksTo(16)));
 
+              public static final RegistryObject<Item> SUMMIT_FLAGPOLE = ITEMS.register("summit_flagpole",
+                      () -> new FlagpoleItem(new Item.Properties().stacksTo(4)));
+
               private static final String PROTOCOL_VERSION = "1";
               public static final SimpleChannel NETWORK = NetworkRegistry.newSimpleChannel(
                       new ResourceLocation(MOD_ID, "main"),
@@ -294,6 +327,18 @@ jobs:
               public static boolean climbingActive = false;
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
+
+              // Система высотомера (Альтиметра) и подсчета проползенных метров вверх
+              public static double climbSessionStartY = 64.0;
+              public static double totalVerticalMetersClimbed = 0.0;
+              public static double lastClimbTrackY = 64.0;
+              public static double currentRouteGainY = 0.0;
+
+              // Система Флагштока Покорителя Вершины
+              public static final List<Vec3> PLACED_FLAGS = new ArrayList<>();
+              public static int summitBannerTicks = 0;
+              public static double summitConqueredAltitude = 0.0;
+              public static double summitConqueredClimbed = 0.0;
 
               public static boolean mantlingActive = false;
               public static int mantleTicks = 0;
@@ -395,42 +440,23 @@ jobs:
                       event.accept(CLIMBING_BANDAGE);
                       event.accept(CHALK_BAG);
                       event.accept(CLIMBING_PITON);
+                      event.accept(SUMMIT_FLAGPOLE);
                   }
               }
 
+              // =========================================================================
+              // РЕАЛЬНЫЕ ПРЕДМЕТЫ В ИНВЕНТАРЕ (БИНТ/ШИНА, МАГНЕЗИЯ, КРЮК, ФЛАГШТОК)
+              // =========================================================================
               public static class BandageItem extends Item {
                   public BandageItem(Properties props) { super(props); }
 
                   @Override
-                  public int getUseDuration(ItemStack stack) { return 28; }
-
-                  @Override
-                  public UseAnim getUseAnimation(ItemStack stack) { return UseAnim.BOW; }
-
-                  @Override
                   public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
                       ItemStack stack = player.getItemInHand(hand);
-                      if (level.isClientSide && !ClientEvents.hasAnyInjury()) {
-                          return InteractionResultHolder.fail(stack);
-                      }
                       if (level.isClientSide) {
-                          bandageAnimTicks = 28;
+                          ClientEvents.openMedicalMinigame(player);
                       }
-                      player.startUsingItem(hand);
-                      return InteractionResultHolder.consume(stack);
-                  }
-
-                  @Override
-                  public ItemStack finishUsingItem(ItemStack stack, Level level, LivingEntity entity) {
-                      if (entity instanceof Player player) {
-                          if (level.isClientSide) {
-                              ClientEvents.healWorstInjuryClient(player);
-                          }
-                          if (!player.getAbilities().instabuild) {
-                              stack.shrink(1);
-                          }
-                      }
-                      return stack;
+                      return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
                   }
               }
 
@@ -471,8 +497,30 @@ jobs:
                   }
               }
 
+              public static class FlagpoleItem extends Item {
+                  public FlagpoleItem(Properties props) { super(props); }
+
+                  @Override
+                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+                      ItemStack stack = player.getItemInHand(hand);
+                      Vec3 eye = player.getEyePosition();
+                      Vec3 reach = eye.add(player.getLookAngle().scale(3.0));
+                      BlockHitResult hit = level.clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+
+                      if (hit.getType() == HitResult.Type.BLOCK) {
+                          if (level.isClientSide) {
+                              ClientEvents.plantSummitFlagpoleClient(player, hit.getLocation());
+                          } else if (!player.getAbilities().instabuild) {
+                              stack.shrink(1);
+                          }
+                          return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
+                      }
+                      return InteractionResultHolder.fail(stack);
+                  }
+              }
+
               public static class PacketConsumeClimbItem {
-                  private final int itemType;
+                  private final int itemType; // 0 = Бинт, 1 = Магнезия, 2 = Крюк, 3 = Флагшток
 
                   public PacketConsumeClimbItem(int itemType) {
                       this.itemType = itemType;
@@ -492,7 +540,8 @@ jobs:
                           if (player == null || player.getAbilities().instabuild) return;
 
                           Item targetItem = msg.itemType == 0 ? CLIMBING_BANDAGE.get()
-                                  : (msg.itemType == 1 ? CHALK_BAG.get() : CLIMBING_PITON.get());
+                                  : (msg.itemType == 1 ? CHALK_BAG.get()
+                                  : (msg.itemType == 2 ? CLIMBING_PITON.get() : SUMMIT_FLAGPOLE.get()));
 
                           for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
                               ItemStack stack = player.getInventory().getItem(i);
@@ -511,6 +560,228 @@ jobs:
                   }
               }
 
+              // =========================================================================
+              // ИНТЕРАКТИВНЫЙ ЭКРАН МИНИ-ИГР МЕДИЦИНЫ (БИНТОВАНИЕ РУКИ И НАЛОЖЕНИЕ ШИНЫ)
+              // =========================================================================
+              public static class MedicalMinigameScreen extends Screen {
+                  private final Limb targetLimb;
+                  private final boolean isSplintGame; // true = Мини-игра с шиной (при переломе/вывихе), false = Мини-игра с наматыванием бинта
+
+                  // Переменные для мини-игры БИНТОВАНИЯ (круговая/спиральная обмотка мышью)
+                  private float bandageProgress = 0.0f;
+                  private double lastMouseX = -1;
+                  private double lastMouseY = -1;
+                  private final List<Integer> wrapOffsets = new ArrayList<>();
+
+                  // Переменные для мини-игры НАЛОЖЕНИЯ ШИНЫ (фиксация 3 ремней в зеленой зоне)
+                  private int currentStrap = 0;
+                  private final boolean[] strapsLocked = new boolean[]{false, false, false};
+                  private final float[] targetZoneCenters = new float[]{0.35f, 0.68f, 0.50f};
+                  private float sliderPos = 0.0f;
+                  private float sliderSpeed = 0.032f;
+                  private boolean sliderForward = true;
+                  private int errorFlashTicks = 0;
+
+                  protected MedicalMinigameScreen(Limb targetLimb, boolean isSplintGame) {
+                      super(Component.literal(isSplintGame ? "Наложение шины" : "Перевязка раны"));
+                      this.targetLimb = targetLimb;
+                      this.isSplintGame = isSplintGame;
+                  }
+
+                  @Override
+                  public boolean isPauseScreen() {
+                      return false;
+                  }
+
+                  @Override
+                  public void tick() {
+                      super.tick();
+                      bandageAnimTicks = 10; // Поддерживаем 3D-анимацию рук во время мини-игры
+                      if (errorFlashTicks > 0) errorFlashTicks--;
+
+                      if (isSplintGame) {
+                          if (sliderForward) {
+                              sliderPos += sliderSpeed;
+                              if (sliderPos >= 1.0f) {
+                                  sliderPos = 1.0f;
+                                  sliderForward = false;
+                              }
+                          } else {
+                              sliderPos -= sliderSpeed;
+                              if (sliderPos <= 0.0f) {
+                                  sliderPos = 0.0f;
+                                  sliderForward = true;
+                              }
+                          }
+                      }
+                  }
+
+                  @Override
+                  public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+                      if (!isSplintGame && button == 0) {
+                          int cx = this.width / 2;
+                          int cy = this.height / 2 + 10;
+                          // Проверяем, что игрок водит мышкой в области раненой руки
+                          if (Math.abs(mouseX - cx) < 120 && Math.abs(mouseY - cy) < 70) {
+                              double moveDist = Math.hypot(dragX, dragY);
+                              if (moveDist > 1.5) {
+                                  bandageProgress = Math.min(100.0f, bandageProgress + (float)(moveDist * 0.22));
+                                  int relX = (int) Mth.clamp(mouseX - (cx - 80), 8, 152);
+                                  if (wrapOffsets.size() < 28 && (wrapOffsets.isEmpty() || Math.abs(wrapOffsets.get(wrapOffsets.size() - 1) - relX) > 6)) {
+                                      wrapOffsets.add(relX);
+                                      if (Minecraft.getInstance().player != null) {
+                                          Minecraft.getInstance().player.playSound(SoundEvents.WOOL_STEP, 0.45f, 1.35f);
+                                      }
+                                  }
+                                  if (bandageProgress >= 100.0f) {
+                                      completeMinigameSuccess();
+                                  }
+                              }
+                          }
+                      }
+                      return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+                  }
+
+                  @Override
+                  public boolean mouseClicked(double mouseX, double mouseY, int button) {
+                      if (isSplintGame && button == 0 && currentStrap < 3) {
+                          float center = targetZoneCenters[currentStrap];
+                          float halfWidth = 0.11f;
+                          if (Math.abs(sliderPos - center) <= halfWidth) {
+                              strapsLocked[currentStrap] = true;
+                              currentStrap++;
+                              sliderSpeed += 0.012f; // Каждый следующий ремень требует большей точности
+                              if (Minecraft.getInstance().player != null) {
+                                  Minecraft.getInstance().player.playSound(SoundEvents.ARMOR_EQUIP_IRON, 0.9f, 1.25f);
+                                  Minecraft.getInstance().player.playSound(SoundEvents.SKELETON_STEP, 0.7f, 0.85f);
+                              }
+                              if (currentStrap >= 3) {
+                                  completeMinigameSuccess();
+                              }
+                          } else {
+                              // Ошибка: не попал в зеленую зону при затягивании шины
+                              errorFlashTicks = 12;
+                              if (Minecraft.getInstance().player != null) {
+                                  Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_HURT, 0.7f, 1.1f);
+                              }
+                          }
+                          return true;
+                      }
+                      return super.mouseClicked(mouseX, mouseY, button);
+                  }
+
+                  private void completeMinigameSuccess() {
+                      Player player = Minecraft.getInstance().player;
+                      if (player != null) {
+                          NETWORK.sendToServer(new PacketConsumeClimbItem(0));
+                          ClientEvents.finishMinigameHeal(player, targetLimb, isSplintGame);
+                      }
+                      this.onClose();
+                  }
+
+                  @Override
+                  public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+                      this.renderBackground(gui);
+                      int cx = this.width / 2;
+                      int cy = this.height / 2;
+
+                      // Тактическое окно полевой хирургии
+                      int boxW = 250;
+                      int boxH = 165;
+                      int x0 = cx - boxW / 2;
+                      int y0 = cy - boxH / 2;
+
+                      int bgCol = errorFlashTicks > 0 ? 0xE83A0D0D : 0xE80B0F14;
+                      int brdCol = isSplintGame ? 0xFFE89825 : 0xFFE63946;
+                      gui.fill(x0, y0, x0 + boxW, y0 + boxH, bgCol);
+                      gui.renderOutline(x0, y0, boxW, boxH, brdCol);
+
+                      if (!isSplintGame) {
+                          // РЕНДЕР МИНИ-ИГРЫ 1: ПЕРЕВЯЗКА ПОРЕЗАННОЙ РУКИ БИНТОМ
+                          gui.drawCenteredString(this.font, "§c§lПЕРЕВЯЗКА ОТКРЫТОЙ РАНЫ (" + targetLimb.name + ")", cx, y0 + 10, 0xFFFFFF);
+                          gui.drawCenteredString(this.font, "§7Зажмите §fЛКМ §7и наматывайте бинт движениями мыши по руке", cx, y0 + 24, 0xAAAAAA);
+
+                          // Изображение предплечья и глубокого кровоточащего пореза
+                          int armX = cx - 80;
+                          int armY = cy - 12;
+                          gui.fill(armX, armY, armX + 160, armY + 38, 0xFFD49B7E); // Кожа предплечья
+                          gui.renderOutline(armX, armY, 160, 38, 0xFF8C583A);
+
+                          // Багровый рваный порез вдоль руки
+                          gui.fill(armX + 22, armY + 15, armX + 138, armY + 23, 0xFF9E0B0B);
+                          gui.fill(armX + 35, armY + 13, armX + 120, armY + 25, 0xFFD91818);
+
+                          // Отрисовка уже намотанных игроком витков марлевого бинта поверх раны
+                          for (int offset : wrapOffsets) {
+                              int wx = armX + offset;
+                              gui.fill(wx - 6, armY - 3, wx + 6, armY + 41, 0xF2F0F4F8);
+                              gui.renderOutline(wx - 6, armY - 3, 12, 44, 0xFFB8C4CE);
+                          }
+
+                          // Рулон бинта под курсором мыши
+                          gui.fill(mouseX - 8, mouseY - 12, mouseX + 8, mouseY + 12, 0xFFFFFFFF);
+                          gui.renderOutline(mouseX - 8, mouseY - 12, 16, 24, 0xFF7A8B99);
+
+                          // Шкала прогресса перевязки
+                          gui.fill(x0 + 25, y0 + 130, x0 + boxW - 25, y0 + 144, 0xFF161C24);
+                          int fillW = (int) ((boxW - 50) * (bandageProgress / 100.0f));
+                          gui.fill(x0 + 25, y0 + 130, x0 + 25 + fillW, y0 + 144, 0xFF38E878);
+                          gui.renderOutline(x0 + 25, y0 + 130, boxW - 50, 14, 0xFF4A5A6A);
+                          gui.drawCenteredString(this.font, String.format("Намотано: %.0f%%", bandageProgress), cx, y0 + 133, 0xFFFFFF);
+                      } else {
+                          // РЕНДЕР МИНИ-ИГРЫ 2: НАЛОЖЕНИЕ ШИНЫ ПРИ ПЕРЕЛОМЕ / ВЫВИХЕ
+                          gui.drawCenteredString(this.font, "§6§lФИКСАЦИЯ ПЕРЕЛОМА ШИНОЙ (" + targetLimb.name + ")", cx, y0 + 10, 0xFFFFFF);
+                          gui.drawCenteredString(this.font, "§7Жмите §fЛКМ §7в зеленой зоне, чтобы затянуть 3 ремня шины", cx, y0 + 24, 0xAAAAAA);
+
+                          int armX = cx - 85;
+                          int armY = cy - 18;
+                          // Контур конечности и смещенной сломанной кости внутри
+                          gui.fill(armX, armY, armX + 170, armY + 42, 0xFF222A34);
+                          gui.renderOutline(armX, armY, 170, 42, 0xFF526274);
+
+                          // Рентген-схема кости (выравнивается по мере затягивания ремней)
+                          int fractureOffset = (3 - currentStrap) * 4;
+                          gui.fill(armX + 12, armY + 16 - fractureOffset, cx - 2, armY + 25 - fractureOffset, 0xFFE2E8F0);
+                          gui.fill(cx + 2, armY + 16 + fractureOffset, armX + 158, armY + 25 + fractureOffset, 0xFFE2E8F0);
+
+                          // Металлическая шина вдоль конечности
+                          gui.fill(armX + 8, armY + 34, armX + 162, armY + 40, 0xFF94A3B8);
+
+                          // 3 фиксирующих ремня
+                          for (int s = 0; s < 3; s++) {
+                              int sx = armX + 30 + s * 50;
+                              int strapCol = strapsLocked[s] ? 0xFF2EC4B6 : (s == currentStrap ? 0xFFF4A261 : 0xFF475569);
+                              gui.fill(sx, armY - 4, sx + 14, armY + 46, strapCol);
+                              gui.renderOutline(sx, armY - 4, 14, 50, 0xFF0F172A);
+                          }
+
+                          // Полоса тайминга затяжки ремня
+                          int barX = x0 + 25;
+                          int barY = y0 + 122;
+                          int barW = boxW - 50;
+                          gui.fill(barX, barY, barX + barW, barY + 18, 0xFF141A22);
+
+                          if (currentStrap < 3) {
+                              float zoneCenter = targetZoneCenters[currentStrap];
+                              int zStart = barX + (int) ((zoneCenter - 0.11f) * barW);
+                              int zEnd = barX + (int) ((zoneCenter + 0.11f) * barW);
+                              gui.fill(zStart, barY, zEnd, barY + 18, 0xAA2EC466);
+                              gui.renderOutline(zStart, barY, zEnd - zStart, 18, 0xFF52FF88);
+                          }
+
+                          int knobX = barX + (int) (sliderPos * barW);
+                          gui.fill(knobX - 3, barY - 4, knobX + 3, barY + 22, 0xFFFFFFFF);
+                          gui.renderOutline(barX, barY, barW, 18, 0xFF64748B);
+                          gui.drawCenteredString(this.font, "Затянуто ремней: " + currentStrap + " / 3", cx, y0 + 145, 0xE2E8F0);
+                      }
+
+                      super.render(gui, mouseX, mouseY, partialTick);
+                  }
+              }
+
+              // =========================================================================
+              // КЛИЕНТСКАЯ ЛОГИКА, КОМПАС, ВЫСОТОМЕР И ФЛАГШТОК ПОКОРИТЕЛЯ ВЕРШИНЫ
+              // =========================================================================
               public static class ClientEvents {
                   public static void registerKeys(RegisterKeyMappingsEvent event) {
                       KEY_TOGGLE_CLIMB = new KeyMapping("Вкл/Выкл Скалолазание", GLFW.GLFW_KEY_R, "Realistic Climbing");
@@ -547,10 +818,21 @@ jobs:
                       if (pitonAnimTicks > 0) pitonAnimTicks--;
                       if (pullUpAnimTicks > 0) pullUpAnimTicks--;
                       if (bandageAnimTicks > 0) bandageAnimTicks--;
+                      if (summitBannerTicks > 0) summitBannerTicks--;
                       if (fallFlailTicks > 0) {
                           fallFlailTicks--;
                           if (player.onGround() || climbingActive || mantlingActive) fallFlailTicks = 0;
                       }
+
+                      // Точный подсчет вертикальных метров, которые игрок прополз вверх
+                      if (climbingActive || mantlingActive) {
+                          double dy = player.getY() - lastClimbTrackY;
+                          if (dy > 0.001 && dy < 1.5) {
+                              totalVerticalMetersClimbed += dy;
+                          }
+                          currentRouteGainY = Math.max(0.0, player.getY() - climbSessionStartY);
+                      }
+                      lastClimbTrackY = player.getY();
 
                       updateAtmosphereAndWind(player);
                       updateMedicalAndInjuries(player);
@@ -561,7 +843,7 @@ jobs:
                       }
 
                       while (KEY_BANDAGE.consumeClick()) {
-                          tryUseBandageHotkey(player);
+                          openMedicalMinigame(player);
                       }
 
                       while (KEY_USE_CHALK.consumeClick()) {
@@ -578,6 +860,8 @@ jobs:
                                   climbingActive = true;
                                   hangingOnRope = false;
                                   fallFlailTicks = 0;
+                                  climbSessionStartY = player.getY();
+                                  lastClimbTrackY = player.getY();
                               }
                           } else {
                               disengageClimb(player, false);
@@ -760,6 +1044,68 @@ jobs:
                       }
                   }
 
+                  // Запуск интерактивной мини-игры лечения (выбирает самую тяжелую травму: перелом -> шина, кровотечение -> бинт)
+                  public static void openMedicalMinigame(Player player) {
+                      if (!hasAnyInjury()) return;
+                      if (!hasItemInInventory(player, CLIMBING_BANDAGE.get())) {
+                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
+                          return;
+                      }
+
+                      Limb worstLimb = null;
+                      float lowestScore = 1000.0f;
+                      for (Limb l : LIMBS) {
+                          float score = l.health - (l.fractured ? 60f : 0f) - (l.dislocated ? 45f : 0f) - (l.bleeding ? 35f : 0f);
+                          if ((l.bleeding || l.dislocated || l.fractured || l.health < 99.0f) && score < lowestScore) {
+                              lowestScore = score;
+                              worstLimb = l;
+                          }
+                      }
+
+                      if (worstLimb == null) worstLimb = LIMBS[0];
+                      boolean needSplint = worstLimb.fractured || worstLimb.dislocated;
+                      Minecraft.getInstance().setScreen(new MedicalMinigameScreen(worstLimb, needSplint));
+                  }
+
+                  public static void finishMinigameHeal(Player player, Limb limb, boolean wasSplint) {
+                      bandageAnimTicks = 18;
+                      if (wasSplint) {
+                          limb.fractured = false;
+                          limb.dislocated = false;
+                          limb.health = Math.min(100.0f, Math.max(75.0f, limb.health + 55.0f));
+                          player.playSound(SoundEvents.ANVIL_USE, 0.5f, 1.6f);
+                      } else {
+                          limb.bleeding = false;
+                          limb.health = Math.min(100.0f, limb.health + 45.0f);
+                          headHealth = Math.min(100.0f, headHealth + 35.0f);
+                          thoraxHealth = Math.min(100.0f, thoraxHealth + 35.0f);
+                          stomachHealth = Math.min(100.0f, stomachHealth + 35.0f);
+                          bloodLoss = Math.max(0.0f, bloodLoss - 45.0f);
+                      }
+                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
+                  }
+
+                  // Установка флагштока на вершине и запуск триумфального баннера
+                  public static void plantSummitFlagpoleClient(Player player, Vec3 pos) {
+                      PLACED_FLAGS.add(pos);
+                      summitBannerTicks = 160; // 8 секунд показа баннера покорения вершины
+                      summitConqueredAltitude = player.getY();
+                      summitConqueredClimbed = Math.max(currentRouteGainY, totalVerticalMetersClimbed);
+
+                      player.playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                      player.playSound(SoundEvents.ANVIL_PLACE, 0.8f, 1.4f);
+
+                      for (int i = 0; i < 30; i++) {
+                          player.level().addParticle(
+                                  ParticleTypes.FIREWORK,
+                                  pos.x, pos.y + 1.4, pos.z,
+                                  (player.level().random.nextDouble() - 0.5) * 0.45,
+                                  0.25 + player.level().random.nextDouble() * 0.35,
+                                  (player.level().random.nextDouble() - 0.5) * 0.45
+                          );
+                      }
+                  }
+
                   private static boolean tryStartLedgeMantle(Player player) {
                       if (LIMBS[0].fractured && LIMBS[1].fractured) return false;
                       if (stamina < 12.0f) return false;
@@ -854,46 +1200,6 @@ jobs:
                       return false;
                   }
 
-                  private static void tryUseBandageHotkey(Player player) {
-                      if (!hasAnyInjury()) return;
-                      if (!hasItemInInventory(player, CLIMBING_BANDAGE.get())) {
-                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
-                          return;
-                      }
-                      NETWORK.sendToServer(new PacketConsumeClimbItem(0));
-                      healWorstInjuryClient(player);
-                  }
-
-                  public static void healWorstInjuryClient(Player player) {
-                      bandageAnimTicks = 30;
-                      Limb worstLimb = null;
-                      float lowestScore = 1000.0f;
-
-                      for (Limb l : LIMBS) {
-                          float score = l.health - (l.fractured ? 60f : 0f) - (l.bleeding ? 40f : 0f) - (l.dislocated ? 30f : 0f);
-                          if ((l.bleeding || l.dislocated || l.fractured || l.health < 99.0f) && score < lowestScore) {
-                              lowestScore = score;
-                              worstLimb = l;
-                          }
-                      }
-
-                      if (worstLimb != null) {
-                          boolean hadBoneInjury = worstLimb.fractured || worstLimb.dislocated;
-                          worstLimb.bleeding = false;
-                          worstLimb.dislocated = false;
-                          worstLimb.fractured = false;
-                          worstLimb.health = Math.min(100.0f, Math.max(70.0f, worstLimb.health + 50.0f));
-                          if (hadBoneInjury) player.playSound(SoundEvents.SKELETON_STEP, 0.8f, 0.75f);
-                      } else {
-                          headHealth = Math.min(100.0f, headHealth + 40.0f);
-                          thoraxHealth = Math.min(100.0f, thoraxHealth + 40.0f);
-                          stomachHealth = Math.min(100.0f, stomachHealth + 40.0f);
-                      }
-
-                      bloodLoss = Math.max(0.0f, bloodLoss - 35.0f);
-                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
-                  }
-
                   private static void tryUseChalkHotkey(Player player) {
                       if (!hasItemInInventory(player, CHALK_BAG.get())) {
                           player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
@@ -954,7 +1260,7 @@ jobs:
                   }
 
                   // =========================================================================
-                  // ОБНОВЛЕННЫЙ АНАТОМИЧЕСКИЙ БИО-СКАНЕР В СТИЛЕ ESCAPE FROM TARKOV (БЕЗ ТЕКСТА)
+                  // ТАРКОВСКИЙ БИО-СКАНЕР + ВЕРХНИЙ RPG-КОМПАС + ВЫСОТОМЕР + БАННЕР ВЕРШИНЫ
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderGuiOverlay(RenderGuiOverlayEvent.Post event) {
@@ -965,13 +1271,23 @@ jobs:
                       GuiGraphics gui = event.getGuiGraphics();
                       PoseStack pose = gui.pose();
                       float time = mc.player.tickCount + event.getPartialTick();
+                      int screenW = mc.getWindow().getGuiScaledWidth();
+                      int screenH = mc.getWindow().getGuiScaledHeight();
 
+                      // 1. ВЕРХНИЙ RPG-КОМПАС ПО ЦЕНТРУ ЭКРАНА И РЯДОМ ВЫСОТОМЕР (АЛЬТИМЕТР)
+                      drawRpgCompassAndAltimeter(gui, mc.player, screenW, time);
+
+                      // 2. ТРИУМФАЛЬНЫЙ БАННЕР ПОКОРЕНИЯ ВЕРШИНЫ ПРИ УСТАНОВКЕ ФЛАГШТОКА
+                      if (summitBannerTicks > 0) {
+                          drawSummitConqueredBanner(gui, screenW, screenH, time);
+                      }
+
+                      // 3. ЛЕВЫЙ ВЕРХНИЙ АНАТОМИЧЕСКИЙ БИО-СКАНЕР В СТИЛЕ ТАРКОВА
                       pose.pushPose();
                       pose.translate(12.0f, 12.0f, 0.0f);
                       pose.mulPose(Axis.YP.rotationDegrees(7.0f));
                       pose.mulPose(Axis.ZP.rotationDegrees(-1.0f));
 
-                      // Темное матовое стекло тактического прибора + угловые засечки рамки
                       gui.fill(0, 0, 68, 108, 0xA8080B0E);
                       for (int gy = 8; gy < 100; gy += 8) {
                           gui.fill(2, gy, 66, gy + 1, 0x162E4052);
@@ -981,7 +1297,6 @@ jobs:
                       }
 
                       int frameCol = isGusting ? 0xFFFF3838 : 0xFF425466;
-                      // Угловые тактические скобки вокруг панели
                       gui.fill(0, 0, 12, 2, frameCol);
                       gui.fill(0, 0, 2, 12, frameCol);
                       gui.fill(56, 0, 68, 2, frameCol);
@@ -991,28 +1306,14 @@ jobs:
                       gui.fill(56, 106, 68, 108, frameCol);
                       gui.fill(66, 96, 68, 108, frameCol);
 
-                      // 1. ГОЛОВА + ШЕЯ (Анатомический силуэт со скошенными углами)
                       drawAnatomicalHead(gui, 28, 5, headHealth, time);
-
-                      // 2. ГРУДНАЯ КЛЕТКА (Широкая трапеция плечевого пояса)
                       drawAnatomicalTorso(gui, 22, 20, 24, 18, thoraxHealth, true, time);
-
-                      // 3. ЖИВОТ И ТАЗ (Сужающийся корпус)
                       drawAnatomicalTorso(gui, 24, 39, 20, 13, stomachHealth, false, time);
-
-                      // 4. ПРАВАЯ РУКА ПЕРСОНАЖА (слева на схеме: Плечо + Предплечье + Кисть)
                       drawAnatomicalArm(gui, 10, 21, false, LIMBS[1], time);
-
-                      // 5. ЛЕВАЯ РУКА ПЕРСОНАЖА (справа на схеме)
                       drawAnatomicalArm(gui, 47, 21, true, LIMBS[0], time);
-
-                      // 6. ПРАВАЯ НОГА ПЕРСОНАЖА (слева внизу: Бедро + Колено + Голень + Стопа)
                       drawAnatomicalLeg(gui, 22, 53, false, LIMBS[3], time);
-
-                      // 7. ЛЕВАЯ НОГА ПЕРСОНАЖА (справа внизу)
                       drawAnatomicalLeg(gui, 36, 53, true, LIMBS[2], time);
 
-                      // 8. ЖИВАЯ ЛИНИЯ ЭКГ (Пульс учащается при нагрузке, гипоксии и кровопотере)
                       int ecgY = 92;
                       float pulseSpeed = 0.45f + (1.0f - stamina / 100.0f) * 0.65f + (bloodLoss * 0.01f);
                       int sweepX = (int) ((time * 8.0f * pulseSpeed) % 56);
@@ -1027,7 +1328,6 @@ jobs:
                           gui.fill(6 + x, ecgY + yOffset, 7 + x, ecgY + yOffset + 1, ecgCol);
                       }
 
-                      // 9. ГРАФИЧЕСКИЕ ШКАЛЫ СТАМИНЫ И МАГНЕЗИИ С НАСЕЧКАМИ
                       gui.fill(6, 98, 62, 101, 0xFF14191F);
                       int stamW = (int) (56.0f * (stamina / 100.0f));
                       int stamCol = stamina < 25.0f ? 0xFFE63946 : 0xFF2EC4B6;
@@ -1038,6 +1338,103 @@ jobs:
                       gui.fill(6, 103, 6 + chalkW, 105, 0xFFE8EEF2);
 
                       pose.popPose();
+                  }
+
+                  // Отрисовка RPG-компаса сверху посередине экрана и блока высотомера (Альтиметра) рядом с ним
+                  private static void drawRpgCompassAndAltimeter(GuiGraphics gui, Player player, int screenW, float time) {
+                      Minecraft mc = Minecraft.getInstance();
+                      int compW = 190;
+                      int compH = 22;
+                      int cx = screenW / 2;
+                      int x0 = cx - compW / 2;
+                      int y0 = 8;
+
+                      // Подложка ленты RPG-компаса
+                      gui.fill(x0, y0, x0 + compW, y0 + compH, 0xB0090D12);
+                      gui.renderOutline(x0, y0, compW, compH, 0xFF3B4D5E);
+                      // Декоративные уголки компаса
+                      gui.fill(x0, y0, x0 + 8, y0 + 2, 0xFF38E8FF);
+                      gui.fill(x0 + compW - 8, y0, x0 + compW, y0 + 2, 0xFF38E8FF);
+
+                      // Приводим угол взгляда игрока к [0..360) где 0=Юг(S), 90=Запад(W), 180=Север(N), 270=Восток(E)
+                      float rawYaw = Mth.wrapDegrees(player.getViewYRot(1.0f));
+                      float bearing = (rawYaw + 180.0f) % 360.0f; // 0 = Север (N), 90 = Восток (E), 180 = Юг (S), 270 = Запад (W)
+                      if (bearing < 0) bearing += 360.0f;
+
+                      // Шкала делений каждые 15 градусов и буквы сторон света
+                      for (int deg = 0; deg < 360; deg += 15) {
+                          float diff = Mth.wrapDegrees(deg - bearing);
+                          if (Math.abs(diff) <= 78.0f) {
+                              int px = cx + (int) (diff * 1.15f);
+                              boolean major = (deg % 45 == 0);
+                              gui.fill(px, y0 + (major ? 2 : 4), px + 1, y0 + (major ? 8 : 7), major ? 0xFFE2E8F0 : 0xFF64748B);
+
+                              String label = null;
+                              int col = 0xFFE2E8F0;
+                              if (deg == 0) { label = "N"; col = 0xFFFF4D4D; }
+                              else if (deg == 45) label = "NE";
+                              else if (deg == 90) { label = "E"; col = 0xFF38E8FF; }
+                              else if (deg == 135) label = "SE";
+                              else if (deg == 180) { label = "S"; col = 0xFF38E8FF; }
+                              else if (deg == 225) label = "SW";
+                              else if (deg == 270) { label = "W"; col = 0xFF38E8FF; }
+                              else if (deg == 315) label = "NW";
+
+                              if (label != null) {
+                                  gui.drawCenteredString(mc.font, label, px, y0 + 10, col);
+                              }
+                          }
+                      }
+
+                      // Если в мире установлен флагшток вершины — рисуем его золотую метку прямо на ленте компаса
+                      if (!PLACED_FLAGS.isEmpty()) {
+                          Vec3 lastFlag = PLACED_FLAGS.get(PLACED_FLAGS.size() - 1);
+                          double dx = lastFlag.x - player.getX();
+                          double dz = lastFlag.z - player.getZ();
+                          float flagYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
+                          float flagBearing = (Mth.wrapDegrees(flagYaw) + 180.0f) % 360.0f;
+                          if (flagBearing < 0) flagBearing += 360.0f;
+                          float diff = Mth.wrapDegrees(flagBearing - bearing);
+                          if (Math.abs(diff) <= 82.0f) {
+                              int fx = cx + (int) (diff * 1.15f);
+                              gui.fill(fx - 2, y0 + 2, fx + 2, y0 + 7, 0xFFFFD700);
+                          }
+                      }
+
+                      // Центральный золотой указатель курса (треугольная риска сверху и градусы снизу)
+                      gui.fill(cx - 2, y0, cx + 3, y0 + 3, 0xFFFFB703);
+                      gui.fill(cx, y0 + 3, cx + 1, y0 + 6, 0xFFFFB703);
+
+                      // БЛОК ВЫСОТОМЕРА (АЛЬТИМЕТРА) СПРАВА ОТ КОМПАСА
+                      int altX = x0 + compW + 6;
+                      int altW = 98;
+                      gui.fill(altX, y0, altX + altW, y0 + compH, 0xB0090D12);
+                      gui.renderOutline(altX, y0, altW, compH, 0xFF3B4D5E);
+                      gui.fill(altX + altW - 6, y0, altX + altW, y0 + 2, 0xFF38F296);
+
+                      int currentAlt = (int) Math.round(player.getY());
+                      String altStr = String.format("§7ВЫС: §f%d м", currentAlt);
+                      String climbedStr = String.format("§7ВВЕРХ: §a+%.1f м", totalVerticalMetersClimbed);
+
+                      gui.drawString(mc.font, altStr, altX + 5, y0 + 3, 0xFFFFFF, true);
+                      gui.drawString(mc.font, climbedStr, altX + 5, y0 + 12, 0xFFFFFF, true);
+                  }
+
+                  // Триумфальный баннер на экране при установке флагштока на вершине
+                  private static void drawSummitConqueredBanner(GuiGraphics gui, int screenW, int screenH, float time) {
+                      Minecraft mc = Minecraft.getInstance();
+                      int bw = 260;
+                      int bh = 54;
+                      int bx = screenW / 2 - bw / 2;
+                      int by = 42;
+
+                      gui.fill(bx, by, bx + bw, by + bh, 0xD80B131E);
+                      gui.renderOutline(bx, by, bw, bh, 0xFFFFB703);
+                      gui.renderOutline(bx + 2, by + 2, bw - 4, bh - 4, 0x80FFD166);
+
+                      gui.drawCenteredString(mc.font, "§6§l★ ВЕРШИНА ПОКОРЕНА! ★", screenW / 2, by + 9, 0xFFFFFF);
+                      gui.drawCenteredString(mc.font, String.format("§fФлаг установлен на высоте §e%.0f м", summitConqueredAltitude), screenW / 2, by + 23, 0xFFFFFF);
+                      gui.drawCenteredString(mc.font, String.format("§7Преодолено по вертикали: §a+%.1f м", summitConqueredClimbed), screenW / 2, by + 36, 0xFFFFFF);
                   }
 
                   private static int getTarkovFillColor(float health, boolean fractured) {
@@ -1062,11 +1459,10 @@ jobs:
                   private static void drawAnatomicalHead(GuiGraphics gui, int x, int y, float health, float time) {
                       int fill = getTarkovFillColor(health, false);
                       int brd = getTarkovBorderColor(health, false, false, time);
-                      // Череп + сужение к челюсти и шее
                       gui.fill(x + 2, y, x + 10, y + 2, fill);
                       gui.fill(x + 1, y + 2, x + 11, y + 8, fill);
                       gui.fill(x + 2, y + 8, x + 10, y + 11, fill);
-                      gui.fill(x + 4, y + 11, x + 8, y + 14, fill); // Шея
+                      gui.fill(x + 4, y + 11, x + 8, y + 14, fill);
                       gui.renderOutline(x + 1, y, 10, 11, brd);
                   }
 
@@ -1077,7 +1473,6 @@ jobs:
                           gui.fill(x, y + 2, x + w, y + h - 2, fill);
                           gui.fill(x + 2, y, x + w - 2, y + 2, fill);
                           gui.fill(x + 2, y + h - 2, x + w - 2, y + h, fill);
-                          // Анатомические линии грудных мышц и ребер
                           gui.fill(x + w / 2, y + 2, x + w / 2 + 1, y + h - 2, 0x45000000);
                           gui.fill(x + 3, y + 8, x + w - 3, y + 9, 0x45000000);
                       } else {
@@ -1092,13 +1487,10 @@ jobs:
                       int fill = getTarkovFillColor(limb.health, boneDmg);
                       int brd = getTarkovBorderColor(limb.health, limb.bleeding, boneDmg, time);
 
-                      // Плечо (верхний сегмент)
                       gui.fill(x + 1, y, x + 10, y + 12, fill);
                       gui.renderOutline(x + 1, y, 9, 12, brd);
-                      // Локтевой сустав + Предплечье (чуть уже)
                       gui.fill(x + 2, y + 13, x + 9, y + 24, fill);
                       gui.renderOutline(x + 2, y + 13, 7, 11, brd);
-                      // Кисть (расширение)
                       int gripCol = (limb.locked && climbingActive) ? 0xFF38F2FF : fill;
                       gui.fill(x + 1, y + 25, x + 10, y + 30, gripCol);
                       gui.renderOutline(x + 1, y + 25, 9, 5, brd);
@@ -1111,13 +1503,10 @@ jobs:
                       int fill = getTarkovFillColor(limb.health, boneDmg);
                       int brd = getTarkovBorderColor(limb.health, limb.bleeding, boneDmg, time);
 
-                      // Бедро
                       gui.fill(x, y, x + 10, y + 14, fill);
                       gui.renderOutline(x, y, 10, 14, brd);
-                      // Голень
                       gui.fill(x + 1, y + 15, x + 9, y + 27, fill);
                       gui.renderOutline(x + 1, y + 15, 8, 12, brd);
-                      // Стопа (ботинок с выступом наружу)
                       int bootX = isRightSideOnHud ? x + 1 : x - 2;
                       int gripCol = (limb.locked && climbingActive) ? 0xFF38F2FF : fill;
                       gui.fill(bootX, y + 28, bootX + 11, y + 33, gripCol);
@@ -1139,9 +1528,6 @@ jobs:
                       }
                   }
 
-                  // =========================================================================
-                  // МЕДИЦИНА И ПОГОДА
-                  // =========================================================================
                   private static void updateMedicalAndInjuries(Player player) {
                       double vy = player.getDeltaMovement().y;
 
@@ -1444,9 +1830,6 @@ jobs:
                       return midPoint.add(bendDir.scale(bendAmount));
                   }
 
-                  // =========================================================================
-                  // 1. РЕНДЕР РУК ОТ ПЕРВОГО ЛИЦА
-                  // =========================================================================
                   @SubscribeEvent
                   public static void onRenderHandFirstPerson(RenderHandEvent event) {
                       Minecraft mc = Minecraft.getInstance();
@@ -1564,9 +1947,6 @@ jobs:
                       poseStack.popPose();
                   }
 
-                  // =========================================================================
-                  // 2. АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (F5)
-                  // =========================================================================
                   @SubscribeEvent
                   public static void onRenderPlayerPost(RenderPlayerEvent.Post event) {
                       Player player = event.getEntity();
@@ -1763,12 +2143,12 @@ jobs:
                   }
 
                   // =========================================================================
-                  // 3. СТИЛИЗОВАННЫЕ НАСТЕННЫЕ МАРКЕРЫ ЗАХВАТА (БЕЗ УГЛОВАТЫХ ДЕБАГ-КУБОВ!)
+                  // 3. 3D-РЕНДЕР МАРКЕРОВ ЗАХВАТА, ВЕРЕВКИ И РАЗВЕВАЮЩЕГОСЯ ФЛАГШТОКА
                   // =========================================================================
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
                       if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
-                      if (!climbingActive && !mantlingActive && PLACED_PITONS.isEmpty()) return;
+                      if (!climbingActive && !mantlingActive && PLACED_PITONS.isEmpty() && PLACED_FLAGS.isEmpty()) return;
 
                       Minecraft mc = Minecraft.getInstance();
                       Player player = mc.player;
@@ -1784,13 +2164,18 @@ jobs:
                       poseStack.pushPose();
                       poseStack.translate(-cam.x, -cam.y, -cam.z);
 
-                      // Базис плоскости стены: u (вдоль стены вправо), v (вдоль стены вверх), n (наружу от стены к игроку)
                       Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw).normalize();
                       Vec3 n = wallForward.scale(-1.0);
                       Vec3 u = wallForward.cross(new Vec3(0, 1, 0)).normalize();
                       Vec3 v = new Vec3(0, 1, 0);
 
-                      // 1. Отрисовка детализированных скальных крючьев (с кольцом карабина) и двойного каната
+                      // Отрисовка установленных 3D-Флагштоков с развевающимся на ветру полотном флага
+                      if (!PLACED_FLAGS.isEmpty()) {
+                          for (Vec3 flagPos : PLACED_FLAGS) {
+                              draw3DSummitFlagpole(poseStack, builder, flagPos, time);
+                          }
+                      }
+
                       if (!PLACED_PITONS.isEmpty()) {
                           for (int i = 0; i < PLACED_PITONS.size(); i++) {
                               Vec3 piton = PLACED_PITONS.get(i);
@@ -1805,13 +2190,11 @@ jobs:
                           drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
                       }
 
-                      // 2. Отрисовка плоских тематических маркеров хвата рук и протекторов ботинок на скале
                       if (climbingActive || mantlingActive) {
                           for (Limb limb : LIMBS) {
                               if (mantlingActive && !limb.isHand) continue;
 
                               Vec3 end = mantlingActive ? (limb.isLeft ? mantleLeftHandPos : mantleRightHandPos) : limb.getRenderPos(pt);
-                              // Слегка выдвигаем маркер из плоскости блока (на 1.5 см), чтобы он не мерцал в текстуре камня
                               Vec3 center = end.add(n.scale(0.018));
 
                               float r, g, b;
@@ -1822,10 +2205,8 @@ jobs:
                               } else if (!limb.locked) {
                                   r = 0.65f; g = 0.72f; b = 0.78f;
                               } else if (limb.isHand) {
-                                  // Бирюзово-изумрудный тактический цвет для хватов рук
                                   r = 0.18f; g = 0.95f; b = 0.82f;
                               } else {
-                                  // Янтарно-лаймовый цвет для опор стоп
                                   r = 0.55f; g = 0.96f; b = 0.32f;
                               }
 
@@ -1835,13 +2216,11 @@ jobs:
                                   drawStylizedFootStepMarker(poseStack, builder, center, u, v, r, g, b, limb, time);
                               }
 
-                              // Тонкая пунктирная линия траектории рисуется ТОЛЬКО в момент переноса конечности к новому уступу
                               if (limb.moveProgress < 1.0f || limb.reaching) {
                                   drawDashedTrajectory(poseStack, builder, limb.startPos.add(n.scale(0.02)), limb.targetPos.add(n.scale(0.02)), r, g, b);
                               }
                           }
 
-                          // 3. Тактический прицел скалолаза в точке взгляда на скале (показывает доступность уступа)
                           if (climbingActive) {
                               drawWallAimReticle(poseStack, builder, player, u, v, n, time);
                           }
@@ -1851,28 +2230,58 @@ jobs:
                       buffer.endBatch(RenderType.lines());
                   }
 
-                  // Стилизованный маркер хвата РУКИ: тактические угловые скобки + кольцо нагрузки + контур мела
+                  // 3D-модель флагштока с динамически развевающимся полотном на ветру
+                  private static void draw3DSummitFlagpole(PoseStack poseStack, VertexConsumer builder, Vec3 base, float time) {
+                      Vec3 poleTop = base.add(0, 1.85, 0);
+                      // Стальная мачта и крестовина основания
+                      drawLine3D(poseStack, builder, base, poleTop, 0.85f, 0.88f, 0.92f, 1.0f);
+                      drawLine3D(poseStack, builder, base.add(-0.15, 0.02, 0), base.add(0.15, 0.02, 0), 0.7f, 0.75f, 0.8f, 1.0f);
+                      drawLine3D(poseStack, builder, base.add(0, 0.02, -0.15), base.add(0, 0.02, 0.15), 0.7f, 0.75f, 0.8f, 1.0f);
+
+                      // Направление ветра для полотна флага
+                      Vec3 windDir = currentWind.lengthSqr() > 0.001 ? currentWind.normalize() : new Vec3(1, 0, 0.3).normalize();
+                      Vec3 sideOrtho = new Vec3(-windDir.z, 0, windDir.x).normalize();
+
+                      int clothSegs = 10;
+                      double flagLength = 0.85;
+                      double flagHeight = 0.48;
+
+                      Vec3 prevTop = poleTop.add(0, -0.05, 0);
+                      Vec3 prevBot = poleTop.add(0, -0.05 - flagHeight, 0);
+
+                      for (int s = 1; s <= clothSegs; s++) {
+                          double t = (double) s / clothSegs;
+                          double flutter = Math.sin(time * 0.45 - t * 4.2) * (0.08 * t);
+                          Vec3 curTop = poleTop.add(0, -0.05, 0)
+                                  .add(windDir.scale(t * flagLength))
+                                  .add(sideOrtho.scale(flutter));
+                          Vec3 curBot = curTop.add(0, -flagHeight + t * 0.08, 0);
+
+                          // Алое полотно с золотой каймой
+                          drawLine3D(poseStack, builder, prevTop, curTop, 1.0f, 0.82f, 0.18f, 1.0f);
+                          drawLine3D(poseStack, builder, prevBot, curBot, 1.0f, 0.82f, 0.18f, 1.0f);
+                          drawLine3D(poseStack, builder, curTop, curBot, 0.95f, 0.18f, 0.22f, 0.95f);
+
+                          prevTop = curTop;
+                          prevBot = curBot;
+                      }
+                  }
+
                   private static void drawStylizedHandGripMarker(PoseStack poseStack, VertexConsumer builder, Vec3 c,
                                                                  Vec3 u, Vec3 v, float r, float g, float b, Limb limb, float time) {
                       float pulse = limb.reaching ? (float)(Math.sin(time * 0.8) * 0.015) : 0.0f;
                       double s = 0.085 + pulse;
-                      double br = 0.036; // Длина каждого уголка
+                      double br = 0.036;
 
-                      // 4 угловых тактических кронштейна (Corner Brackets) в плоскости стены
-                      // Верхний левый уголок
                       drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(s)), c.add(u.scale(-s + br)).add(v.scale(s)), r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(s)), c.add(u.scale(-s)).add(v.scale(s - br)), r, g, b, 0.95f);
-                      // Верхний правый уголок
                       drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(s)), c.add(u.scale(s - br)).add(v.scale(s)), r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(s)), c.add(u.scale(s)).add(v.scale(s - br)), r, g, b, 0.95f);
-                      // Нижний левый уголок
                       drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(-s)), c.add(u.scale(-s + br)).add(v.scale(-s)), r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(-s)), c.add(u.scale(-s)).add(v.scale(-s + br)), r, g, b, 0.95f);
-                      // Нижний правый уголок
                       drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(-s)), c.add(u.scale(s - br)).add(v.scale(-s)), r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(-s)), c.add(u.scale(s)).add(v.scale(-s + br)), r, g, b, 0.95f);
 
-                      // Внутреннее круговое кольцо (12-гранник) индикации сцепления пальцев
                       int segs = 12;
                       double ringRad = 0.042 * Mth.clamp(limb.getEffectiveness(), 0.4f, 1.0f);
                       for (int i = 0; i < segs; i++) {
@@ -1883,7 +2292,6 @@ jobs:
                           drawLine3D(poseStack, builder, p1, p2, r, g, b, 0.85f);
                       }
 
-                      // Если руки намагнежены (>40%), рисуем тонкий белый ореол сухого трения внутри кольца
                       if (chalkLevel > 40.0f && limb.locked) {
                           double chalkRad = 0.022;
                           for (int i = 0; i < 6; i++) {
@@ -1896,7 +2304,6 @@ jobs:
                       }
                   }
 
-                  // Стилизованный маркер опоры НОГИ: контур подошвы скальника с протектором (Boot Tread)
                   private static void drawStylizedFootStepMarker(PoseStack poseStack, VertexConsumer builder, Vec3 c,
                                                                  Vec3 u, Vec3 v, float r, float g, float b, Limb limb, float time) {
                       double topW = 0.068;
@@ -1908,13 +2315,11 @@ jobs:
                       Vec3 br = c.add(u.scale(botW)).add(v.scale(-h));
                       Vec3 bl = c.add(u.scale(-botW)).add(v.scale(-h));
 
-                      // Трапециевидная окантовка ранта скального туфля
                       drawLine3D(poseStack, builder, tl, tr, r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, tr, br, r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, br, bl, r, g, b, 0.95f);
                       drawLine3D(poseStack, builder, bl, tl, r, g, b, 0.95f);
 
-                      // Ребристые насечки протектора подошвы внутри контура
                       for (int t = -2; t <= 2; t++) {
                           double tx = t * 0.022;
                           Vec3 pTop = c.add(u.scale(tx)).add(v.scale(h * 0.55));
@@ -1923,17 +2328,14 @@ jobs:
                       }
                   }
 
-                  // Стилизованный стальной шлямбур (крюк в породе + круглое ушко карабина)
                   private static void drawStylizedPitonAnchor(PoseStack poseStack, VertexConsumer builder, Vec3 pos,
                                                               Vec3 u, Vec3 v, Vec3 n) {
                       Vec3 surface = pos.add(n.scale(0.015));
                       Vec3 ringCenter = surface.add(n.scale(0.04)).add(v.scale(-0.03));
 
-                      // Стальной стержень, уходящий в камень, и крепежная планка
                       drawLine3D(poseStack, builder, pos.subtract(n.scale(0.03)), ringCenter, 0.78f, 0.82f, 0.88f, 1.0f);
                       drawLine3D(poseStack, builder, surface.add(u.scale(-0.04)), surface.add(u.scale(0.04)), 0.78f, 0.82f, 0.88f, 1.0f);
 
-                      // Круглое заводное кольцо карабина (оранжево-золотистая сталь)
                       int segs = 10;
                       double rad = 0.045;
                       for (int i = 0; i < segs; i++) {
@@ -1945,7 +2347,6 @@ jobs:
                       }
                   }
 
-                  // Ненавязчивый тактический прицел на скале (показывает точку, куда встанет рука/нога при нажатии Q/E/Z/C)
                   private static void drawWallAimReticle(PoseStack poseStack, VertexConsumer builder, Player player,
                                                          Vec3 u, Vec3 v, Vec3 n, float time) {
                       Vec3 eye = player.getEyePosition(1.0f);
@@ -1955,7 +2356,6 @@ jobs:
                       if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
                           Vec3 p = hit.getLocation().add(n.scale(0.02));
                           double d = 0.032 + Math.sin(time * 0.25) * 0.005;
-                          // Маленький ромб прицеливания
                           Vec3 top = p.add(v.scale(d));
                           Vec3 bot = p.add(v.scale(-d));
                           Vec3 left = p.add(u.scale(-d));
@@ -2001,7 +2401,6 @@ jobs:
                           float r = taut ? 1.0f : 0.92f;
                           float g = taut ? 0.25f : 0.68f;
                           float b = 0.22f;
-                          // Двойная переплетенная жила альпинистского каната для визуальной толщины
                           drawLine3D(poseStack, builder, prev, pt, r, g, b, 0.95f);
                           drawLine3D(poseStack, builder, prev.add(0.012, 0.012, 0), pt.add(0.012, 0.012, 0), r * 0.75f, g * 0.75f, b * 0.75f, 0.85f);
                           prev = pt;
