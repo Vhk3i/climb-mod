@@ -39,7 +39,7 @@ jobs:
               id 'net.minecraftforge.gradle' version '[6.0,6.2)'
           }
 
-          version = '1.2.0'
+          version = '1.3.0'
           group = 'com.realisticclimbing'
           base {
               archivesName = 'realisticclimbing-1.20.1'
@@ -75,9 +75,9 @@ jobs:
           license="MIT"
           [[mods]]
           modId="realisticclimbing"
-          version="1.2.0"
+          version="1.3.0"
           displayName="Realistic Climbing Simulator"
-          description="4-Limb Physics Climbing Simulator with IK, Wind, Altitude Pressure, Chalk and Piton Rope Belay"
+          description="Full Procedural Animation & 4-Limb IK Climbing Simulator"
           EOF
 
           cat << 'EOF' > src/main/resources/pack.mcmeta
@@ -94,19 +94,24 @@ jobs:
 
           import com.mojang.blaze3d.vertex.PoseStack;
           import com.mojang.blaze3d.vertex.VertexConsumer;
+          import com.mojang.math.Axis;
           import net.minecraft.client.KeyMapping;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.model.PlayerModel;
+          import net.minecraft.client.model.geom.ModelPart;
           import net.minecraft.client.player.AbstractClientPlayer;
           import net.minecraft.client.renderer.LevelRenderer;
           import net.minecraft.client.renderer.MultiBufferSource;
           import net.minecraft.client.renderer.RenderType;
+          import net.minecraft.client.renderer.entity.player.PlayerRenderer;
           import net.minecraft.core.BlockPos;
           import net.minecraft.core.Direction;
           import net.minecraft.core.particles.ParticleTypes;
           import net.minecraft.network.chat.Component;
           import net.minecraft.sounds.SoundEvents;
           import net.minecraft.util.Mth;
+          import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.entity.HumanoidArm;
           import net.minecraft.world.entity.player.Player;
           import net.minecraft.world.level.ClipContext;
           import net.minecraft.world.level.Level;
@@ -118,6 +123,7 @@ jobs:
           import net.minecraft.world.phys.Vec3;
           import net.minecraftforge.api.distmarker.Dist;
           import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
+          import net.minecraftforge.client.event.RenderHandEvent;
           import net.minecraftforge.client.event.RenderLevelStageEvent;
           import net.minecraftforge.client.event.RenderPlayerEvent;
           import net.minecraftforge.common.MinecraftForge;
@@ -126,6 +132,7 @@ jobs:
           import net.minecraftforge.fml.common.Mod;
           import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
           import net.minecraftforge.fml.loading.FMLEnvironment;
+          import org.joml.Matrix4f;
           import org.lwjgl.glfw.GLFW;
 
           import java.util.ArrayList;
@@ -140,36 +147,43 @@ jobs:
               public static KeyMapping KEY_RIGHT_HAND;
               public static KeyMapping KEY_LEFT_FOOT;
               public static KeyMapping KEY_RIGHT_FOOT;
-              public static KeyMapping KEY_USE_CHALK;   // G - Нанести магнезию на руки
-              public static KeyMapping KEY_PLACE_PITON; // V - Забить страховочный крюк
+              public static KeyMapping KEY_USE_CHALK;
+              public static KeyMapping KEY_PLACE_PITON;
 
               public static boolean climbingActive = false;
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
 
-              // Система магнезии (сухость и трение ладоней: от 0 до 100%)
+              // Таймеры процедурных анимаций действий
+              public static int chalkAnimTicks = 0;    // Анимация растирания магнезии ладонями
+              public static int pitonAnimTicks = 0;    // Анимация забивания крюка молотком
+              public static int fallFlailTicks = 0;    // Анимация паники и взмахов руками при срыве
+              public static int pullUpAnimTicks = 0;   // Анимация рывка корпуса вверх
+
               public static float chalkLevel = 100.0f;
               public static int chalkUsesLeft = 8;
 
-              // Система страховочных крючьев (шлямбуров) и веревки
               public static final List<Vec3> PLACED_PITONS = new ArrayList<>();
               public static int pitonsLeft = 5;
               public static boolean hangingOnRope = false;
-              public static double maxRopeSlack = 3.8; // Свободный ход веревки до срабатывания страховки
+              public static double maxRopeSlack = 3.8;
 
-              // Система ветра и атмосферного давления
               public static Vec3 currentWind = Vec3.ZERO;
               public static float windSpeed = 0.0f;
               public static float pressureKPa = 101.3f;
               public static float hypoxiaFactor = 0.0f;
               public static int gustTimer = 0;
               public static boolean isGusting = false;
+              public static float lockedWallYaw = 0.0f;
 
               public static class Limb {
                   public final String name;
                   public final boolean isHand;
                   public final boolean isLeft;
                   public boolean locked = false;
+                  public boolean reaching = false;
+                  public float moveProgress = 1.0f;
+                  public Vec3 startPos = Vec3.ZERO;
                   public Vec3 currentPos = Vec3.ZERO;
                   public Vec3 targetPos = Vec3.ZERO;
                   public Vec3 elbowOrKneePos = Vec3.ZERO;
@@ -222,9 +236,17 @@ jobs:
                       Minecraft mc = Minecraft.getInstance();
                       if (player != mc.player) return;
 
+                      // Уменьшаем таймеры процедурных анимаций
+                      if (chalkAnimTicks > 0) chalkAnimTicks--;
+                      if (pitonAnimTicks > 0) pitonAnimTicks--;
+                      if (pullUpAnimTicks > 0) pullUpAnimTicks--;
+                      if (fallFlailTicks > 0) {
+                          fallFlailTicks--;
+                          if (player.onGround() || climbingActive) fallFlailTicks = 0;
+                      }
+
                       updateAtmosphereAndWind(player);
 
-                      // Если игрок твердо стоит на земле и не лезет — пополняем снаряжение и снимаем старую веревку
                       if (player.onGround() && !climbingActive) {
                           if (!PLACED_PITONS.isEmpty() || pitonsLeft < 5 || chalkUsesLeft < 8) {
                               PLACED_PITONS.clear();
@@ -234,32 +256,29 @@ jobs:
                           }
                       }
 
-                      // Обработка клавиши G (Магнезия для рук)
                       while (KEY_USE_CHALK.consumeClick()) {
                           useChalk(player);
                       }
 
-                      // Обработка клавиши V (Забить страховочный крюк в скалу)
                       while (KEY_PLACE_PITON.consumeClick()) {
                           placePiton(player);
                       }
 
-                      // Обработка клавиши R (Вход/выход из режима лазания)
                       while (KEY_TOGGLE_CLIMB.consumeClick()) {
                           if (!climbingActive) {
                               if (tryEngageWall(player)) {
                                   climbingActive = true;
                                   hangingOnRope = false;
-                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E/Z/C - Конечности | G - Магнезия | V - Крюк"), true);
+                                  fallFlailTicks = 0;
+                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Все анимации тела и рук активны (F5 / 1-е лицо)"), true);
                               } else {
                                   player.displayClientMessage(Component.literal("§c[Climbing] Подойди ближе к стене!"), true);
                               }
                           } else {
-                              disengageClimb(player, "§eВы отпустили стену");
+                              disengageClimb(player, "§eВы отпустили стену", false);
                           }
                       }
 
-                      // Если игрок сорвался или отпустил стену, проверяем работу страховочной веревки
                       if (!climbingActive) {
                           float recoveryRate = 0.45f * (1.0f - hypoxiaFactor * 0.60f);
                           stamina = Math.min(100.0f, stamina + recoveryRate);
@@ -272,7 +291,6 @@ jobs:
                       handleLimbInput(player, 2, KEY_LEFT_FOOT);
                       handleLimbInput(player, 3, KEY_RIGHT_FOOT);
 
-                      // Стирание магнезии со временем (в дождь и при нагрузке руки потеют/намокают быстрее)
                       float sweatRate = player.level().isRaining() ? 0.22f : 0.07f;
                       chalkLevel = Math.max(0.0f, chalkLevel - sweatRate);
 
@@ -280,15 +298,28 @@ jobs:
                       int handsLocked = 0;
                       Vec3 centerOfSupport = Vec3.ZERO;
 
-                      // Магнезия увеличивает надежность удержания при растяжении
                       double chalkBonus = (chalkLevel / 100.0) * 0.12;
                       double maxStretchDist = 1.62 - (hypoxiaFactor * 0.22) + chalkBonus;
 
                       for (int i = 0; i < 4; i++) {
                           Limb limb = LIMBS[i];
-                          limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.35);
-
                           Vec3 rootPos = getJointRoot(player, limb);
+
+                          // Плавная дуговая анимация переноса конечности от старого зацепа к новому
+                          if (limb.moveProgress < 1.0f) {
+                              limb.moveProgress = Math.min(1.0f, limb.moveProgress + 0.18f);
+                              Vec3 baseLerp = limb.startPos.lerp(limb.targetPos, limb.moveProgress);
+                              // Дуга отрыва руки/ноги на себя от стены во время перехвата
+                              Vec3 wallOut = Vec3.directionFromRotation(0, lockedWallYaw).scale(-Math.sin(limb.moveProgress * Math.PI) * 0.28);
+                              limb.currentPos = baseLerp.add(wallOut);
+                              if (limb.moveProgress >= 1.0f) {
+                                  limb.reaching = false;
+                                  player.playSound(SoundEvents.STONE_STEP, 0.35f, limb.isHand ? 1.3f : 0.9f);
+                              }
+                          } else {
+                              limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.45);
+                          }
+
                           limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
 
                           if (limb.locked && rootPos.distanceTo(limb.currentPos) > maxStretchDist) {
@@ -296,11 +327,10 @@ jobs:
                               player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась от натяжения!"), true);
                           }
 
-                          // Если магнезия стерлась (<15%) и дует ветер, есть риск соскальзывания ладони
                           if (limb.locked && limb.isHand && chalkLevel < 15.0f && windSpeed > 12.0f) {
                               if (player.level().random.nextFloat() < 0.008f) {
                                   limb.locked = false;
-                                  player.displayClientMessage(Component.literal("§c[!] Скользкие руки! " + limb.name + " соскользнула (нажми G для магнезии)!"), true);
+                                  player.displayClientMessage(Component.literal("§c[!] Скользкие руки! " + limb.name + " соскользнула (нажми G)!"), true);
                               }
                           }
 
@@ -312,7 +342,7 @@ jobs:
                       }
 
                       if (lockedCount < 2 || handsLocked == 0) {
-                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — слишком мало точек захвата!");
+                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — слишком мало точек захвата!", true);
                           return;
                       }
 
@@ -320,7 +350,6 @@ jobs:
 
                       float gripResistance = (lockedCount == 4) ? 0.25f : (lockedCount == 3 ? 0.75f : 1.45f);
                       float windInstability = (windSpeed / 28.0f) * gripResistance;
-                      // Намагнеженные руки дают до +12% к стабильности на сложных выступах
                       float chalkStabilityBonus = (chalkLevel / 100.0f) * 0.12f;
 
                       stability = Mth.clamp(
@@ -328,7 +357,6 @@ jobs:
                               0.0f, 1.0f
                       );
 
-                      // Сухие руки с магнезией экономят до 30% стамины, потные руки без магнезии увеличивают расход
                       float chalkStaminaFactor = 1.25f - (chalkLevel / 100.0f) * 0.45f;
                       float altitudeMultiplier = 1.0f + (hypoxiaFactor * 1.8f);
                       float windStrain = (windSpeed * 0.004f) * gripResistance;
@@ -337,22 +365,23 @@ jobs:
 
                       if (isGusting && windSpeed > 15.0f && lockedCount <= 2) {
                           player.setDeltaMovement(currentWind.scale(0.85).add(0, -0.2, 0));
-                          disengageClimb(player, "§c[СДУЛО ВЕТРОМ!] Шквальный порыв сорвал вас со скалы!");
+                          disengageClimb(player, "§c[СДУЛО ВЕТРОМ!] Шквальный порыв сорвал вас со скалы!", true);
                           return;
                       }
 
                       if (stamina <= 0.0f || stability < 0.10f) {
                           player.setDeltaMovement(currentWind.scale(0.45));
-                          disengageClimb(player, "§c[СРЫВ!] Вы сорвались со стены!");
+                          disengageClimb(player, "§c[СРЫВ!] Вы сорвались со стены!", true);
                           return;
                       }
 
-                      Vec3 lookDir = Vec3.directionFromRotation(0, player.getYRot());
-                      Vec3 idealBodyPos = centerOfSupport.subtract(lookDir.scale(0.45)).add(0, -0.85, 0);
+                      Vec3 lookDir = Vec3.directionFromRotation(0, lockedWallYaw);
+                      Vec3 idealBodyPos = centerOfSupport.subtract(lookDir.scale(0.42)).add(0, -0.85, 0);
 
                       Vec3 sideDir = lookDir.cross(new Vec3(0, 1, 0)).normalize();
                       double swayUp = (player.zza * 0.18);
                       double swaySide = (-player.xxa * 0.18);
+                      if (player.zza > 0.1f && pullUpAnimTicks == 0) pullUpAnimTicks = 10;
 
                       double tremor = (stamina < 35f || hypoxiaFactor > 0.45f)
                               ? Math.sin(player.tickCount * 0.55) * (0.025 + hypoxiaFactor * 0.035)
@@ -369,6 +398,10 @@ jobs:
 
                       player.setDeltaMovement(velocity);
                       player.fallDistance = 0.0f;
+
+                      // Фиксируем поворот корпуса лицом к стене для реалистичной посадки на F5
+                      player.yBodyRot = lockedWallYaw;
+                      player.yBodyRotO = lockedWallYaw;
 
                       if (windSpeed > 8.0f && player.tickCount % 2 == 0) {
                           Vec3 pPos = player.getEyePosition().add(
@@ -398,32 +431,30 @@ jobs:
                       }
                   }
 
-                  // Нанесение магнезии на руки (клавиша G)
                   private static void useChalk(Player player) {
                       if (chalkUsesLeft <= 0) {
-                          player.displayClientMessage(Component.literal("§c[Магнезия] Мешочек с магнезией пуст! Спуститесь на землю для пополнения."), true);
+                          player.displayClientMessage(Component.literal("§c[Магнезия] Мешочек пуст! Спуститесь на землю для пополнения."), true);
                           return;
                       }
                       chalkUsesLeft--;
                       chalkLevel = 100.0f;
+                      chalkAnimTicks = 24; // Запуск 1.2-секундной анимации растирания рук магнезией
                       stamina = Math.min(100.0f, stamina + 8.0f);
                       player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
 
-                      // Облачко белой меловой пыли вокруг рук
-                      for (int i = 0; i < 12; i++) {
+                      for (int i = 0; i < 14; i++) {
                           Vec3 handPos = climbingActive ? LIMBS[i % 2].currentPos : player.getEyePosition().add(player.getLookAngle().scale(0.5));
                           player.level().addParticle(
                                   ParticleTypes.CLOUD,
-                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.3,
-                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.3,
-                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.3,
-                                  0.0, 0.02, 0.0
+                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.35,
+                                  0.0, 0.03, 0.0
                           );
                       }
-                      player.displayClientMessage(Component.literal("§f[Магнезия] Руки обработаны мелом! Сцепление 100% (Осталось порций: " + chalkUsesLeft + ")"), true);
+                      player.displayClientMessage(Component.literal("§f[Магнезия] Руки обработаны мелом! Сцепление 100% (Осталось: " + chalkUsesLeft + ")"), true);
                   }
 
-                  // Забивание страховочного крюка (шлямбура) в скалу (клавиша V)
                   private static void placePiton(Player player) {
                       if (pitonsLeft <= 0) {
                           player.displayClientMessage(Component.literal("§c[Страховка] Закончились страховочные крючья! (0/5)"), true);
@@ -437,25 +468,24 @@ jobs:
                           Vec3 pitonPos = hit.getLocation();
                           PLACED_PITONS.add(pitonPos);
                           pitonsLeft--;
+                          pitonAnimTicks = 18; // Запуск анимации ударов молотком по крюку
                           player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
 
-                          // Искры от забивания стального крюка в породу
-                          for (int i = 0; i < 8; i++) {
+                          for (int i = 0; i < 10; i++) {
                               player.level().addParticle(
                                       ParticleTypes.CRIT,
                                       pitonPos.x, pitonPos.y, pitonPos.z,
                                       (player.level().random.nextDouble() - 0.5) * 0.25,
-                                      0.1,
+                                      0.12,
                                       (player.level().random.nextDouble() - 0.5) * 0.25
                               );
                           }
-                          player.displayClientMessage(Component.literal("§e[Страховка] Крюк надежно вбит в скалу! Веревка пристегнута (Осталось крючьев: " + pitonsLeft + ")"), true);
+                          player.displayClientMessage(Component.literal("§e[Страховка] Крюк вбит в скалу! (Осталось крючьев: " + pitonsLeft + ")"), true);
                       } else {
-                          player.displayClientMessage(Component.literal("§c[Страховка] Наведи прицел вплотную на скалу, чтобы вбить крюк!"), true);
+                          player.displayClientMessage(Component.literal("§c[Страховка] Наведи прицел на скалу!"), true);
                       }
                   }
 
-                  // Динамическая физика страховки: удержание игрока веревкой при срыве со скалы
                   private static void updateRopeArrestPhysics(Player player) {
                       if (PLACED_PITONS.isEmpty()) return;
 
@@ -466,16 +496,15 @@ jobs:
                       if (dist > maxRopeSlack) {
                           if (!hangingOnRope) {
                               hangingOnRope = true;
+                              fallFlailTicks = 0;
                               player.playSound(SoundEvents.LEASH_KNOT_PLACE, 1.0f, 0.8f);
                               player.displayClientMessage(Component.literal("§a[СТРАХОВКА СРАБОТАЛА!] Веревка удержала срыв! Жми ПРОБЕЛ для подъема или R у стены"), true);
                           }
 
-                          // Пружинящее натяжение динамической альпинистской веревки (закон Гука + демпфирование)
                           Vec3 pullDir = lastAnchor.subtract(waistPos).normalize();
                           double stretch = dist - maxRopeSlack;
                           Vec3 currentVel = player.getDeltaMovement();
 
-                          // Подтягивание вверх по веревке при зажатом Пробеле (жумар)
                           double climbRopeBoost = Minecraft.getInstance().options.keyJump.isDown() ? 0.14 : 0.0;
 
                           Vec3 springForce = pullDir.scale(Math.min(stretch * 0.38, 0.75));
@@ -537,6 +566,7 @@ jobs:
                   private static void handleLimbInput(Player player, int index, KeyMapping key) {
                       Limb limb = LIMBS[index];
                       if (key.isDown()) {
+                          limb.reaching = true;
                           Vec3 eye = player.getEyePosition();
                           double maxReachRay = 2.1 - (hypoxiaFactor * 0.35);
                           Vec3 reach = eye.add(player.getLookAngle().scale(maxReachRay));
@@ -545,13 +575,17 @@ jobs:
                           if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
                               Vec3 gripPoint = hit.getLocation();
                               Vec3 root = getJointRoot(player, limb);
-                              if (root.distanceTo(gripPoint) <= 1.55 - (hypoxiaFactor * 0.2)) {
+                              if (root.distanceTo(gripPoint) <= 1.55 - (hypoxiaFactor * 0.2) && limb.targetPos.distanceTo(gripPoint) > 0.08) {
+                                  limb.startPos = limb.currentPos;
                                   limb.targetPos = gripPoint;
+                                  limb.moveProgress = 0.0f;
                                   BlockState state = player.level().getBlockState(hit.getBlockPos());
                                   limb.gripQuality = state.getBlock().getFriction();
                                   limb.locked = true;
                               }
                           }
+                      } else {
+                          limb.reaching = false;
                       }
                   }
 
@@ -562,28 +596,42 @@ jobs:
 
                       if (hit.getType() != HitResult.Type.BLOCK) return false;
 
-                      Vec3 wallHit = hit.getLocation();
-                      Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
+                      // Фиксируем угол стены по нормали блока
+                      Direction face = hit.getDirection();
+                      if (face.getAxis().isHorizontal()) {
+                          lockedWallYaw = face.getOpposite().toYRot();
+                      } else {
+                          lockedWallYaw = player.getYRot();
+                      }
 
-                      LIMBS[0].targetPos = LIMBS[0].currentPos = wallHit.add(right.scale(-0.35)).add(0, 0.25, 0);
-                      LIMBS[1].targetPos = LIMBS[1].currentPos = wallHit.add(right.scale(0.35)).add(0, 0.25, 0);
-                      LIMBS[2].targetPos = LIMBS[2].currentPos = wallHit.add(right.scale(-0.25)).add(0, -0.75, 0);
-                      LIMBS[3].targetPos = LIMBS[3].currentPos = wallHit.add(right.scale(0.25)).add(0, -0.75, 0);
+                      Vec3 wallHit = hit.getLocation();
+                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
+                      Vec3 right = wallForward.cross(new Vec3(0, 1, 0)).normalize();
+
+                      LIMBS[0].startPos = LIMBS[0].targetPos = LIMBS[0].currentPos = wallHit.add(right.scale(-0.35)).add(0, 0.25, 0);
+                      LIMBS[1].startPos = LIMBS[1].targetPos = LIMBS[1].currentPos = wallHit.add(right.scale(0.35)).add(0, 0.25, 0);
+                      LIMBS[2].startPos = LIMBS[2].targetPos = LIMBS[2].currentPos = wallHit.add(right.scale(-0.25)).add(0, -0.75, 0);
+                      LIMBS[3].startPos = LIMBS[3].targetPos = LIMBS[3].currentPos = wallHit.add(right.scale(0.25)).add(0, -0.75, 0);
 
                       for (Limb limb : LIMBS) {
                           limb.locked = true;
+                          limb.moveProgress = 1.0f;
                       }
                       return true;
                   }
 
-                  private static void disengageClimb(Player player, String reason) {
+                  private static void disengageClimb(Player player, String reason, boolean isFall) {
                       climbingActive = false;
+                      if (isFall) {
+                          fallFlailTicks = 45; // 2.2 секунды анимации паники при падении
+                          player.playSound(SoundEvents.PLAYER_ATTACK_SWEEP, 0.8f, 0.6f);
+                      }
                       for (Limb limb : LIMBS) limb.locked = false;
                       player.displayClientMessage(Component.literal(reason), true);
                   }
 
                   private static Vec3 getJointRoot(Player player, Limb limb) {
-                      Vec3 forward = Vec3.directionFromRotation(0, player.getYRot());
+                      Vec3 forward = Vec3.directionFromRotation(0, climbingActive ? lockedWallYaw : player.getYRot());
                       Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
                       double sideOffset = limb.isLeft ? -0.28 : 0.28;
                       double heightOffset = limb.isHand ? 1.32 : 0.72;
@@ -597,28 +645,275 @@ jobs:
                       Vec3 midPoint = root.add(diff.scale(0.5));
 
                       double bendAmount = Math.sqrt(Math.max(0.0, boneLen * boneLen - (dist * 0.5) * (dist * 0.5)));
-                      Vec3 bendDir = new Vec3(isLeft ? -0.35 : 0.35, isHand ? -0.85 : 0.4, 0.35).normalize();
+                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
+                      Vec3 right = wallForward.cross(new Vec3(0, 1, 0)).normalize();
+
+                      // Естественный вектор выноса локтей (в стороны и вниз) и коленей (в стороны и от стены)
+                      Vec3 bendDir = right.scale(isLeft ? -0.55 : 0.55)
+                              .add(0, isHand ? -0.75 : 0.25, 0)
+                              .subtract(wallForward.scale(0.45))
+                              .normalize();
                       return midPoint.add(bendDir.scale(bendAmount));
                   }
 
+                  // =========================================================================
+                  // 1. АНИМАЦИЯ РУК ОТ ПЕРВОГО ЛИЦА (1ST PERSON PROCEDURAL CLIMBING HANDS)
+                  // =========================================================================
                   @SubscribeEvent
-                  public static void onRenderPlayerPost(RenderPlayerEvent.Pre event) {
-                      if (!climbingActive || event.getEntity() != Minecraft.getInstance().player) return;
+                  public static void onRenderHandFirstPerson(RenderHandEvent event) {
+                      Minecraft mc = Minecraft.getInstance();
+                      AbstractClientPlayer player = mc.player;
+                      if (player == null) return;
+
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0) return;
+
+                      // Рисуем обе руки кастомно при обработке главной руки
+                      event.setCanceled(true);
+                      if (event.getHand() != InteractionHand.MAIN_HAND) return;
+
+                      PoseStack poseStack = event.getPoseStack();
+                      MultiBufferSource buffer = event.getMultiBufferSource();
+                      int light = event.getPackedLight();
+                      float pt = event.getPartialTick();
+                      float time = player.tickCount + pt;
+
+                      PlayerRenderer playerRenderer = (PlayerRenderer) mc.getEntityRenderDispatcher().getRenderer(player);
+
+                      // Рендер левой и правой руки от первого лица
+                      renderProceduralFirstPersonArm(poseStack, buffer, light, player, playerRenderer, true, time);
+                      renderProceduralFirstPersonArm(poseStack, buffer, light, player, playerRenderer, false, time);
+                  }
+
+                  private static void renderProceduralFirstPersonArm(PoseStack poseStack, MultiBufferSource buffer, int light,
+                                                                     AbstractClientPlayer player, PlayerRenderer renderer,
+                                                                     boolean isLeft, float time) {
+                      poseStack.pushPose();
+                      float side = isLeft ? -1.0f : 1.0f;
+                      Limb handLimb = isLeft ? LIMBS[0] : LIMBS[1];
+
+                      // Базовое положение рук перед камерой скалолаза
+                      double x = side * 0.38;
+                      double y = -0.32;
+                      double z = -0.52;
+                      float pitch = -65.0f;
+                      float yaw = side * 15.0f;
+                      float roll = side * -12.0f;
+
+                      if (chalkAnimTicks > 0) {
+                          // Анимация растирания магнезии ладонями перед лицом
+                          x = side * (0.10 + Math.sin(time * 1.8) * 0.06);
+                          y = -0.38 + Math.cos(time * 2.2) * 0.04;
+                          z = -0.45;
+                          pitch = -35.0f;
+                          yaw = side * -35.0f;
+                      } else if (pitonAnimTicks > 0 && !isLeft) {
+                          // Анимация забивания страховочного крюка правой рукой
+                          float strike = (float) Math.sin(pitonAnimTicks * 0.85f);
+                          y = -0.20 + strike * 0.25;
+                          z = -0.45 - Math.max(0, strike) * 0.25;
+                          pitch = -85.0f + strike * 45.0f;
+                      } else if (fallFlailTicks > 0) {
+                          // Паническое размахивание руками при срыве со скалы
+                          y = -0.25 + Math.sin(time * 1.4 + side) * 0.22;
+                          x = side * (0.42 + Math.cos(time * 1.1) * 0.12);
+                          pitch = -95.0f + (float) Math.sin(time * 1.6 + side) * 35.0f;
+                      } else if (hangingOnRope) {
+                          // Руки держатся за натянутую веревку перед грудью и перебирают её при подъеме
+                          double climbOffset = Minecraft.getInstance().options.keyJump.isDown() ? Math.sin(time * 0.9 + (isLeft ? 0 : Math.PI)) * 0.14 : 0.0;
+                          x = side * 0.12;
+                          y = -0.22 + climbOffset;
+                          z = -0.42;
+                          pitch = -80.0f;
+                          yaw = side * -20.0f;
+                      } else if (climbingActive) {
+                          // Смещение руки на экране в зависимости от высоты зацепа относительно глаз
+                          Vec3 eye = player.getEyePosition(1.0f);
+                          double relY = Mth.clamp(handLimb.currentPos.y - eye.y, -0.8, 0.8);
+                          double reachZ = (handLimb.moveProgress < 1.0f) ? -Math.sin(handLimb.moveProgress * Math.PI) * 0.22 : 0.0;
+
+                          // Дрожь рук от усталости, ветра и гипоксии
+                          double shake = (stamina < 40f || hypoxiaFactor > 0.4f || isGusting)
+                                  ? Math.sin(time * 1.7 + side) * 0.015 : 0.0;
+
+                          x += shake;
+                          y += relY * 0.35 + shake;
+                          z += reachZ;
+                          pitch = -75.0f - (float)(relY * 35.0);
+                      }
+
+                      poseStack.translate(x, y, z);
+                      poseStack.mulPose(Axis.XP.rotationDegrees(pitch));
+                      poseStack.mulPose(Axis.YP.rotationDegrees(yaw));
+                      poseStack.mulPose(Axis.ZP.rotationDegrees(roll));
+
+                      if (isLeft) {
+                          renderer.renderLeftHand(poseStack, buffer, light, player);
+                      } else {
+                          renderer.renderRightHand(poseStack, buffer, light, player);
+                      }
+                      poseStack.popPose();
+                  }
+
+                  // =========================================================================
+                  // 2. ПОЛНАЯ ПРОЦЕДУРНАЯ АНИМАЦИЯ МОДЕЛИ ОТ 3-ГО ЛИЦА (F5)
+                  // =========================================================================
+                  @SubscribeEvent
+                  public static void onRenderPlayerPost(RenderPlayerEvent.Post event) {
+                      Player player = event.getEntity();
+                      if (player != Minecraft.getInstance().player) return;
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0) return;
+
+                      // Подавляем стандартную анимацию ходьбы конечностей
+                      player.walkAnimation.setSpeed(0.0f);
+                  }
+
+                  @SubscribeEvent
+                  public static void onRenderPlayerPre(RenderPlayerEvent.Pre event) {
+                      Player player = event.getEntity();
+                      if (player != Minecraft.getInstance().player) return;
+                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0) return;
+
                       PlayerModel<AbstractClientPlayer> model = event.getRenderer().getModel();
+                      float pt = event.getPartialTick();
+                      float time = player.tickCount + pt;
 
-                      applyLimbRotationToModel(event.getEntity(), LIMBS[0], model.leftArm);
-                      applyLimbRotationToModel(event.getEntity(), LIMBS[1], model.rightArm);
-                      applyLimbRotationToModel(event.getEntity(), LIMBS[2], model.leftLeg);
-                      applyLimbRotationToModel(event.getEntity(), LIMBS[3], model.rightLeg);
+                      // Блокируем ванильный шаг
+                      player.walkAnimation.setSpeed(0.0f);
+
+                      // Состояние 1: Падение / Срыв со стены (Паника в воздухе)
+                      if (fallFlailTicks > 0 && !climbingActive && !hangingOnRope) {
+                          model.body.xRot = 0.35f;
+                          model.leftArm.xRot = -2.4f + Mth.sin(time * 1.5f) * 0.75f;
+                          model.leftArm.zRot = -0.6f + Mth.cos(time * 1.2f) * 0.35f;
+                          model.rightArm.xRot = -2.4f - Mth.sin(time * 1.5f) * 0.75f;
+                          model.rightArm.zRot = 0.6f - Mth.cos(time * 1.2f) * 0.35f;
+
+                          model.leftLeg.xRot = Mth.sin(time * 1.4f) * 0.65f;
+                          model.rightLeg.xRot = -Mth.sin(time * 1.4f) * 0.65f;
+                          syncModelLayers(model);
+                          return;
+                      }
+
+                      // Состояние 2: Зависание на страховочной веревке и подъем на жумаре
+                      if (hangingOnRope && !climbingActive) {
+                          boolean pulling = Minecraft.getInstance().options.keyJump.isDown();
+                          float pullCycle = pulling ? Mth.sin(time * 0.7f) * 0.45f : 0.0f;
+
+                          model.body.xRot = 0.18f;
+                          model.body.zRot = Mth.sin(time * 0.15f) * 0.08f;
+
+                          model.leftArm.xRot = -2.35f + pullCycle;
+                          model.leftArm.yRot = 0.35f;
+                          model.rightArm.xRot = -2.35f - pullCycle;
+                          model.rightArm.yRot = -0.35f;
+
+                          model.leftLeg.xRot = -0.35f + pullCycle * 0.3f;
+                          model.leftLeg.zRot = -0.12f;
+                          model.rightLeg.xRot = -0.25f - pullCycle * 0.3f;
+                          model.rightLeg.zRot = 0.12f;
+                          syncModelLayers(model);
+                          return;
+                      }
+
+                      // Состояние 3: Активное скалолазание (12 процедурных под-состояний)
+                      if (climbingActive) {
+                          player.yBodyRot = lockedWallYaw;
+                          player.yBodyRotO = lockedWallYaw;
+
+                          // Дыхание, гипоксия и перенос веса корпуса (WASD + ветер)
+                          float breathFreq = 0.18f + (1.0f - stamina / 100.0f) * 0.35f + hypoxiaFactor * 0.25f;
+                          float breathAmp = 0.04f + (1.0f - stamina / 100.0f) * 0.06f;
+                          float leanSide = -player.xxa * 0.22f + (float)(currentWind.x * 0.25f);
+                          float pullForward = (pullUpAnimTicks > 0) ? Mth.sin(pullUpAnimTicks * 0.3f) * 0.22f : 0.08f;
+
+                          model.body.xRot = pullForward + Mth.sin(time * breathFreq) * breathAmp;
+                          model.body.zRot = leanSide;
+                          model.body.yRot = (LIMBS[0].reaching ? -0.18f : (LIMBS[1].reaching ? 0.18f : 0.0f));
+
+                          // Применяем 3D IK-углы к каждой из 4 конечностей
+                          applyLimbIKToModel(player, LIMBS[0], model.leftArm, time);
+                          applyLimbIKToModel(player, LIMBS[1], model.rightArm, time);
+                          applyLimbIKToModel(player, LIMBS[2], model.leftLeg, time);
+                          applyLimbIKToModel(player, LIMBS[3], model.rightLeg, time);
+
+                          // Оверлей анимации нанесения магнезии (руки к мешочку на поясе и растирание)
+                          if (chalkAnimTicks > 0) {
+                              model.leftArm.xRot = -0.85f + Mth.sin(time * 1.8f) * 0.25f;
+                              model.leftArm.yRot = 0.65f;
+                              model.leftArm.zRot = 0.25f;
+
+                              model.rightArm.xRot = -0.85f - Mth.sin(time * 1.8f) * 0.25f;
+                              model.rightArm.yRot = -0.65f;
+                              model.rightArm.zRot = -0.25f;
+                          }
+
+                          // Оверлей анимации забивания крюка молотком правой рукой
+                          if (pitonAnimTicks > 0) {
+                              float hammerSwing = Mth.sin(pitonAnimTicks * 0.9f);
+                              model.rightArm.xRot = -1.9f + hammerSwing * 0.95f;
+                              model.rightArm.yRot = -0.15f;
+                              model.rightArm.zRot = 0.1f;
+                          }
+
+                          syncModelLayers(model);
+                      }
                   }
 
-                  private static void applyLimbRotationToModel(Player player, Limb limb, net.minecraft.client.model.geom.ModelPart part) {
+                  private static void applyLimbIKToModel(Player player, Limb limb, ModelPart part, float time) {
+                      // Если конечность сорвалась и не держит зацеп — анимация поиска опоры / балансирования
+                      if (!limb.locked) {
+                          float balanceWave = Mth.sin(time * 0.45f + (limb.isLeft ? 0.0f : 2.0f));
+                          if (limb.isHand) {
+                              part.xRot = -1.3f + balanceWave * 0.35f;
+                              part.zRot = (limb.isLeft ? -0.75f : 0.75f) + balanceWave * 0.25f;
+                              part.yRot = 0.0f;
+                          } else {
+                              part.xRot = 0.25f + balanceWave * 0.2f;
+                              part.zRot = (limb.isLeft ? -0.25f : 0.25f);
+                              part.yRot = 0.0f;
+                          }
+                          return;
+                      }
+
                       Vec3 root = getJointRoot(player, limb);
-                      Vec3 dir = limb.currentPos.subtract(root).normalize();
-                      part.xRot = (float) -Math.asin(Mth.clamp(dir.y, -1.0, 1.0)) - 1.2f;
-                      part.zRot = (float) (limb.isLeft ? -0.25f : 0.25f);
+                      // Направляем сегмент модели через рассчитанный IK-сустав (локоть/колено) к зацепу
+                      Vec3 targetDir = limb.elbowOrKneePos.lerp(limb.currentPos, 0.65).subtract(root).normalize();
+
+                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
+                      Vec3 wallRight = wallForward.cross(new Vec3(0, 1, 0)).normalize();
+
+                      double localForward = targetDir.dot(wallForward);
+                      double localUp = targetDir.y;
+                      double localSide = targetDir.dot(wallRight);
+
+                      float tremor = (stamina < 35f || hypoxiaFactor > 0.45f)
+                              ? Mth.sin(time * 1.9f + (limb.isLeft ? 0 : 1.5f)) * 0.04f : 0.0f;
+
+                      if (limb.isHand) {
+                          part.xRot = (float) (-Math.atan2(localForward, -localUp)) + tremor;
+                          part.zRot = (float) (localSide * 1.15) + (limb.isLeft ? -0.18f : 0.18f);
+                          part.yRot = (float) (-localSide * 0.45);
+                      } else {
+                          // Сгибание бедра и отведение колена в сторону при постановке стопы на высокий выступ
+                          double legLift = Mth.clamp((limb.currentPos.y - player.getY()) * 1.4, -0.4, 1.3);
+                          part.xRot = (float) (-legLift * 1.15 - Math.max(0, localForward * 0.5)) + tremor;
+                          part.zRot = (float) (localSide * 0.85) + (limb.isLeft ? -0.15f : 0.15f);
+                          part.yRot = (float) (limb.isLeft ? -0.2f : 0.2f);
+                      }
                   }
 
+                  // Копирование углов на второй слой скина игрока (рукава, штанины, куртка)
+                  private static void syncModelLayers(PlayerModel<AbstractClientPlayer> model) {
+                      model.jacket.copyFrom(model.body);
+                      model.leftSleeve.copyFrom(model.leftArm);
+                      model.rightSleeve.copyFrom(model.rightArm);
+                      model.leftPants.copyFrom(model.leftLeg);
+                      model.rightPants.copyFrom(model.rightLeg);
+                  }
+
+                  // =========================================================================
+                  // 3. 3D-ВИЗУАЛИЗАЦИЯ ДВУХЗВЕННЫХ СУСТАВОВ (ПЛЕЧО-ЛОКОТЬ-КИСТЬ) И СНАРЯЖЕНИЯ
+                  // =========================================================================
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
                       if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
@@ -636,7 +931,7 @@ jobs:
                       poseStack.pushPose();
                       poseStack.translate(-cam.x, -cam.y, -cam.z);
 
-                      // Отрисовка вбитых страховочных крючьев и натянутой между ними альпинистской веревки
+                      // Отрисовка крючьев и альпинистской веревки
                       if (!PLACED_PITONS.isEmpty()) {
                           for (int i = 0; i < PLACED_PITONS.size(); i++) {
                               Vec3 piton = PLACED_PITONS.get(i);
@@ -652,18 +947,28 @@ jobs:
                           drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
                       }
 
-                      // Отрисовка 4 конечностей и IK-суставов в режиме скалолазания
+                      // Отрисовка 4 конечностей, сгибов локтей/коленей и костей IK
                       if (climbingActive) {
                           for (Limb limb : LIMBS) {
-                              float r = limb.isHand ? 0.1f : 0.2f;
-                              float g = limb.locked ? 0.95f : 0.2f;
-                              float b = limb.isHand ? 0.95f : 0.3f;
+                              Vec3 root = getJointRoot(player, limb);
+                              Vec3 joint = limb.elbowOrKneePos;
+                              Vec3 end = limb.currentPos;
 
-                              AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
+                              float r = limb.isHand ? 0.15f : 0.25f;
+                              float g = limb.locked ? 0.95f : 0.25f;
+                              float b = limb.isHand ? 0.95f : 0.35f;
+
+                              // Точка захвата (кисть / стопа)
+                              AABB grip = new AABB(end, end).inflate(0.075);
                               LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
 
-                              AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
-                              LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+                              // Сустав сгиба (локоть / колено)
+                              AABB elbow = new AABB(joint, joint).inflate(0.05);
+                              LevelRenderer.renderLineBox(poseStack, builder, elbow.minX, elbow.minY, elbow.minZ, elbow.maxX, elbow.maxY, elbow.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
+
+                              // Отрисовка двух костных сегментов: [Плечо/Бедро -> Локоть/Колено] и [Локоть/Колено -> Кисть/Стопа]
+                              drawBoneSegment(poseStack, builder, root, joint, 0.95f, 0.75f, 0.2f);
+                              drawBoneSegment(poseStack, builder, joint, end, r, g, b);
                           }
                       }
 
@@ -671,22 +976,31 @@ jobs:
                       buffer.endBatch(RenderType.lines());
                   }
 
-                  // Визуализация веревки между крючьями и поясом игрока (с провисанием или натяжением)
+                  private static void drawBoneSegment(PoseStack poseStack, VertexConsumer builder, Vec3 a, Vec3 b, float r, float g, float bl) {
+                      Matrix4f mat = poseStack.last().pose();
+                      Vec3 norm = b.subtract(a).normalize();
+                      builder.vertex(mat, (float) a.x, (float) a.y, (float) a.z).color(r, g, bl, 1.0f).normal((float) norm.x, (float) norm.y, (float) norm.z).endVertex();
+                      builder.vertex(mat, (float) b.x, (float) b.y, (float) b.z).color(r, g, bl, 1.0f).normal((float) norm.x, (float) norm.y, (float) norm.z).endVertex();
+                  }
+
                   private static void drawRopeSegments(PoseStack poseStack, VertexConsumer builder, Vec3 from, Vec3 to, boolean taut) {
-                      int steps = 12;
-                      for (int s = 0; s <= steps; s++) {
+                      Matrix4f mat = poseStack.last().pose();
+                      int steps = 14;
+                      Vec3 prev = from;
+                      for (int s = 1; s <= steps; s++) {
                           double t = (double) s / steps;
                           Vec3 pt = from.lerp(to, t);
-                          // Если веревка не натянута срывом, она слегка провисает параболой вниз
                           if (!taut) {
-                              double sag = Math.sin(t * Math.PI) * 0.25;
+                              double sag = Math.sin(t * Math.PI) * 0.28;
                               pt = pt.add(0, -sag, 0);
                           }
-                          AABB node = new AABB(pt, pt).inflate(0.025);
                           float r = taut ? 1.0f : 0.85f;
                           float g = taut ? 0.2f : 0.75f;
                           float b = 0.2f;
-                          LevelRenderer.renderLineBox(poseStack, builder, node.minX, node.minY, node.minZ, node.maxX, node.maxY, node.maxZ, r, g, b, 0.9f);
+                          Vec3 dir = pt.subtract(prev).normalize();
+                          builder.vertex(mat, (float) prev.x, (float) prev.y, (float) prev.z).color(r, g, b, 1.0f).normal((float) dir.x, (float) dir.y, (float) dir.z).endVertex();
+                          builder.vertex(mat, (float) pt.x, (float) pt.y, (float) pt.z).color(r, g, b, 1.0f).normal((float) dir.x, (float) dir.y, (float) dir.z).endVertex();
+                          prev = pt;
                       }
                   }
               }
