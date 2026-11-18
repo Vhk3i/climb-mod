@@ -1,578 +1,152 @@
-name: Build Jar
+name: Build Climbing Mod (Ice Axe & Collision Update)
 
 on:
   push:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Gradle 8.4, Generate Custom PNG Textures & Build Mod v2.0
+      - name: Inject New Mechanics Code
         run: |
-          wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
-          unzip -q gradle-8.4-bin.zip
-          export PATH=$PWD/gradle-8.4/bin:$PATH
+          # Создаем все нужные папки
+          mkdir -p src/main/java/com/realisticclimbing
+          mkdir -p src/main/resources/assets/realisticclimbing/models/item
+          mkdir -p src/main/resources/assets/realisticclimbing/textures/item
 
-          mkdir -p mod_build/src/main/java/com/realisticclimbing
-          mkdir -p mod_build/src/main/resources/META-INF
-          mkdir -p mod_build/src/main/resources/assets/realisticclimbing/models/item
-          mkdir -p mod_build/src/main/resources/assets/realisticclimbing/textures/item
-          mkdir -p mod_build/src/main/resources/assets/realisticclimbing/lang
-          mkdir -p mod_build/src/main/resources/data/realisticclimbing/recipes
-          cd mod_build
-
-          # Генерация кастомных 16x16 PNG текстур и проверка их записи в ресурсы
-          python3 - << 'PYEOF'
-          import zlib, struct, os
-
-          def save_png(filename, grid, palette):
-              width, height = 16, 16
-              raw_data = bytearray()
-              for row in grid:
-                  raw_data.append(0)
-                  for ch in row:
-                      r, g, b, a = palette.get(ch, (0, 0, 0, 0))
-                      raw_data.extend([r, g, b, a])
-
-              def make_chunk(chunk_type, data):
-                  chunk = struct.pack('>I', len(data)) + chunk_type + data
-                  crc = zlib.crc32(chunk_type + data) & 0xffffffff
-                  return chunk + struct.pack('>I', crc)
-
-              png = b'\x89PNG\r\n\x1a\n'
-              ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
-              png += make_chunk(b'IHDR', ihdr)
-              png += make_chunk(b'IDAT', zlib.compress(bytes(raw_data), 9))
-              png += make_chunk(b'IEND', b'')
-              with open(filename, 'wb') as f:
-                  f.write(png)
-              print("Generated texture:", filename, os.path.getsize(filename), "bytes")
-
-          # 1. ИПП и Шина (climbing_bandage.png)
-          bandage_palette = {
-              '.': (0, 0, 0, 0),
-              'O': (20, 28, 22, 255),
-              'G': (64, 96, 58, 255),
-              'L': (96, 134, 84, 255),
-              'W': (245, 248, 252, 255),
-              'S': (190, 202, 215, 255),
-              'R': (230, 35, 35, 255),
-              'M': (150, 168, 184, 255),
-              'B': (210, 130, 45, 255),
-          }
-          bandage_grid = [
-              "..........OOOO..",
-              ".........OMMMMO.",
-              "........OMMBBMMO",
-              "...OOOOOOOMMMMO.",
-              "..OLLLLLLOMMMO..",
-              ".OLWWWWWWOMMO...",
-              ".OWWWWRWWOMO....",
-              ".OWWWRRRWOMBBMO.",
-              ".OWWWWRWWOMMMO..",
-              ".OSWWWWWWOMMO...",
-              "..OSSSSSSOMO....",
-              "...OOOOOOOBMO...",
-              "........OMMMO...",
-              ".......OMMMO....",
-              ".......OOOO.....",
-              "................"
-          ]
-          save_png("src/main/resources/assets/realisticclimbing/textures/item/climbing_bandage.png", bandage_grid, bandage_palette)
-
-          # 2. Мешочек с магнезией (chalk_bag.png)
-          chalk_palette = {
-              '.': (0, 0, 0, 0),
-              'O': (30, 20, 14, 255),
-              'W': (250, 252, 255, 255),
-              'C': (205, 220, 235, 255),
-              'B': (45, 160, 235, 255),
-              'L': (145, 85, 45, 255),
-              'D': (95, 52, 26, 255),
-              'H': (178, 114, 68, 255),
-              'M': (235, 185, 45, 255),
-          }
-          chalk_grid = [
-              "......OOOO......",
-              "....OOWWWWOO....",
-              "...OWWWWWWWWO...",
-              "..OWWWCCCCWWWO..",
-              "..OBBBBBBBBBBO..",
-              ".OMBBBBBBBBBBBO.",
-              ".OMOHHLLLLLLDDO.",
-              "..OOHHLLLLLLDDO.",
-              "...OHHLLLLLLDDO.",
-              "...OHHLLLLLLDDO.",
-              "...OHLLLLLLLDDO.",
-              "...ODLLLLLLDDDO.",
-              "....ODDDDDDDDO..",
-              ".....OOOOOOOO...",
-              "................",
-              "................"
-          ]
-          save_png("src/main/resources/assets/realisticclimbing/textures/item/chalk_bag.png", chalk_grid, chalk_palette)
-
-          # 3. Скальный крюк (climbing_piton.png)
-          piton_palette = {
-              '.': (0, 0, 0, 0),
-              'O': (22, 26, 32, 255),
-              'S': (185, 198, 212, 255),
-              'M': (128, 142, 158, 255),
-              'D': (75, 86, 100, 255),
-              'R': (250, 130, 25, 255),
-              'Y': (255, 200, 65, 255),
-          }
-          piton_grid = [
-              ".........OOOO...",
-              "........OSSSSO..",
-              ".......OSSOOSSO.",
-              ".......OSORROSO.",
-              "......OOMRYYRMO.",
-              ".....OSSMROORRO.",
-              "....OSSMMOOOO...",
-              "...OSSMMDO......",
-              "..OSSMMDO.......",
-              ".OSSMMDO........",
-              ".OSMMDDO........",
-              "OSSMDDO.........",
-              "OSMDDO..........",
-              "OMDO............",
-              "OO..............",
-              "................"
-          ]
-          save_png("src/main/resources/assets/realisticclimbing/textures/item/climbing_piton.png", piton_grid, piton_palette)
-
-          # 4. Флагшток вершины (summit_flagpole.png)
-          flag_palette = {
-              '.': (0, 0, 0, 0),
-              'O': (28, 22, 24, 255),
-              'G': (255, 210, 35, 255),
-              'P': (190, 200, 212, 255),
-              'D': (110, 120, 132, 255),
-              'R': (235, 32, 42, 255),
-              'K': (175, 18, 28, 255),
-          }
-          flag_grid = [
-              "..OO............",
-              ".OGGOOOOOOO.....",
-              "..OPRRRRRRRRO...",
-              "..OPRRGGRRRRRO..",
-              "..OPRRGGRKKKKRO.",
-              "..OPRRRRKKKKO...",
-              "..OPKKKKKKKKO...",
-              "..OPOOOOOOO.....",
-              "..OPDO..........",
-              "..OPDO..........",
-              "..OPDO..........",
-              "..OPDO..........",
-              "..OPDO..........",
-              "..OPDO..........",
-              ".OGPGGO.........",
-              ".OOOOOO........."
-          ]
-          save_png("src/main/resources/assets/realisticclimbing/textures/item/summit_flagpole.png", flag_grid, flag_palette)
-          PYEOF
-
-          cat << 'EOF' > settings.gradle
-          pluginManagement {
-              repositories {
-                  gradlePluginPortal()
-                  maven { url = 'https://maven.minecraftforge.net/' }
-              }
-          }
-          rootProject.name = 'realisticclimbing'
-          EOF
-
-          cat << 'EOF' > build.gradle
-          plugins {
-              id 'net.minecraftforge.gradle' version '[6.0,6.2)'
-          }
-
-          version = '2.0-FINAL'
-          group = 'com.realisticclimbing'
-          base {
-              archivesName = 'RealisticClimbing'
-          }
-
-          java.toolchain.languageVersion = JavaLanguageVersion.of(17)
-
-          minecraft {
-              mappings channel: 'official', version: '1.20.1'
-          }
-
-          repositories {
-              maven { url = 'https://maven.minecraftforge.net/' }
-              mavenCentral()
-          }
-
-          dependencies {
-              minecraft 'net.minecraftforge:forge:1.20.1-47.2.20'
-          }
-
-          tasks.withType(JavaCompile).configureEach {
-              options.encoding = 'UTF-8'
-          }
-
-          jar {
-              finalizedBy 'reobfJar'
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/META-INF/mods.toml
-          modLoader="javafml"
-          loaderVersion="[47,)"
-          license="MIT"
-          [[mods]]
-          modId="realisticclimbing"
-          version="2.0.0"
-          displayName="Realistic Climbing Simulator v2.0"
-          description="Inventory Tarkov Health HUD, Working Medical Minigames, Custom Textures, Summit Flagpole & RPG Compass"
-          EOF
-
-          cat << 'EOF' > src/main/resources/pack.mcmeta
-          {
-              "pack": {
-                  "description": "realisticclimbing resources",
-                  "pack_format": 15
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/climbing_bandage.json
-          {
-              "parent": "minecraft:item/generated",
-              "textures": {
-                  "layer0": "realisticclimbing:item/climbing_bandage"
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/chalk_bag.json
-          {
-              "parent": "minecraft:item/generated",
-              "textures": {
-                  "layer0": "realisticclimbing:item/chalk_bag"
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/climbing_piton.json
-          {
-              "parent": "minecraft:item/handheld",
-              "textures": {
-                  "layer0": "realisticclimbing:item/climbing_piton"
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/summit_flagpole.json
-          {
-              "parent": "minecraft:item/handheld",
-              "textures": {
-                  "layer0": "realisticclimbing:item/summit_flagpole"
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/lang/ru_ru.json
-          {
-              "item.realisticclimbing.climbing_bandage": "Перевязочный пакет и шина (ИПП)",
-              "item.realisticclimbing.chalk_bag": "Мешочек с магнезией",
-              "item.realisticclimbing.climbing_piton": "Скальный страховочный крюк",
-              "item.realisticclimbing.summit_flagpole": "Флагшток покорителя вершины"
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/assets/realisticclimbing/lang/en_us.json
-          {
-              "item.realisticclimbing.climbing_bandage": "Tactical Bandage & Splint",
-              "item.realisticclimbing.chalk_bag": "Climbing Chalk Bag",
-              "item.realisticclimbing.climbing_piton": "Steel Climbing Piton",
-              "item.realisticclimbing.summit_flagpole": "Summit Conquer Flagpole"
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/climbing_bandage.json
-          {
-              "type": "minecraft:crafting_shaped",
-              "pattern": [
-                  "SWS",
-                  "TPT"
-              ],
-              "key": {
-                  "S": { "item": "minecraft:string" },
-                  "W": { "tag": "minecraft:wool" },
-                  "T": { "item": "minecraft:stick" },
-                  "P": { "item": "minecraft:paper" }
-              },
-              "result": {
-                  "item": "realisticclimbing:climbing_bandage",
-                  "count": 2
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/chalk_bag.json
-          {
-              "type": "minecraft:crafting_shaped",
-              "pattern": [
-                  "BBB",
-                  "LFL",
-                  " L "
-              ],
-              "key": {
-                  "B": { "item": "minecraft:bone_meal" },
-                  "L": { "item": "minecraft:leather" },
-                  "F": { "item": "minecraft:flint" }
-              },
-              "result": {
-                  "item": "realisticclimbing:chalk_bag",
-                  "count": 1
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/climbing_piton.json
-          {
-              "type": "minecraft:crafting_shaped",
-              "pattern": [
-                  " IN",
-                  " I ",
-                  "N  "
-              ],
-              "key": {
-                  "I": { "item": "minecraft:iron_ingot" },
-                  "N": { "item": "minecraft:iron_nugget" }
-              },
-              "result": {
-                  "item": "realisticclimbing:climbing_piton",
-                  "count": 3
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/resources/data/realisticclimbing/recipes/summit_flagpole.json
-          {
-              "type": "minecraft:crafting_shaped",
-              "pattern": [
-                  "GWW",
-                  "IGW",
-                  "I  "
-              ],
-              "key": {
-                  "G": { "item": "minecraft:gold_nugget" },
-                  "W": { "tag": "minecraft:wool" },
-                  "I": { "item": "minecraft:iron_ingot" }
-              },
-              "result": {
-                  "item": "realisticclimbing:summit_flagpole",
-                  "count": 1
-              }
-          }
-          EOF
-
-          cat << 'EOF' > src/main/java/com/realisticclimbing/RealisticClimbingMod.java
+          # 1. Создаем класс ледоруба
+          cat << 'EOF' > src/main/java/com/realisticclimbing/IceAxeItem.java
           package com.realisticclimbing;
-
-          import com.mojang.blaze3d.vertex.PoseStack;
-          import com.mojang.blaze3d.vertex.VertexConsumer;
-          import com.mojang.math.Axis;
-          import net.minecraft.ChatFormatting;
-          import net.minecraft.client.KeyMapping;
-          import net.minecraft.client.Minecraft;
-          import net.minecraft.client.gui.GuiGraphics;
-          import net.minecraft.client.gui.screens.Screen;
-          import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-          import net.minecraft.client.gui.screens.inventory.InventoryScreen;
-          import net.minecraft.client.model.PlayerModel;
-          import net.minecraft.client.model.geom.ModelPart;
-          import net.minecraft.client.player.AbstractClientPlayer;
-          import net.minecraft.client.renderer.MultiBufferSource;
-          import net.minecraft.client.renderer.RenderType;
-          import net.minecraft.client.renderer.entity.player.PlayerRenderer;
           import net.minecraft.core.BlockPos;
-          import net.minecraft.core.Direction;
-          import net.minecraft.core.particles.BlockParticleOption;
-          import net.minecraft.core.particles.ParticleTypes;
-          import net.minecraft.network.FriendlyByteBuf;
-          import net.minecraft.network.chat.Component;
-          import net.minecraft.resources.ResourceLocation;
-          import net.minecraft.server.level.ServerPlayer;
-          import net.minecraft.sounds.SoundEvents;
-          import net.minecraft.util.Mth;
-          import net.minecraft.world.InteractionHand;
-          import net.minecraft.world.InteractionResultHolder;
-          import net.minecraft.world.effect.MobEffectInstance;
-          import net.minecraft.world.effect.MobEffects;
-          import net.minecraft.world.entity.player.Player;
-          import net.minecraft.world.item.CreativeModeTabs;
+          import net.minecraft.tags.BlockTags;
           import net.minecraft.world.item.Item;
-          import net.minecraft.world.item.ItemStack;
-          import net.minecraft.world.item.TooltipFlag;
-          import net.minecraft.world.level.ClipContext;
           import net.minecraft.world.level.Level;
-          import net.minecraft.world.level.LightLayer;
           import net.minecraft.world.level.block.Blocks;
           import net.minecraft.world.level.block.state.BlockState;
+
+          public class IceAxeItem extends Item {
+              public IceAxeItem(Properties properties) {
+                  super(properties.stacksTo(1).durability(250));
+              }
+              public static boolean canGripSurface(Level level, BlockPos pos) {
+                  BlockState state = level.getBlockState(pos);
+                  if (state.is(BlockTags.DIRT) || state.is(BlockTags.SAND) || state.is(Blocks.GRAVEL) || state.is(Blocks.SNOW_BLOCK)) {
+                      return false;
+                  }
+                  return state.is(BlockTags.MINEABLE_WITH_PICKAXE) || state.is(Blocks.ICE) || state.is(Blocks.PACKED_ICE) || state.is(Blocks.BLUE_ICE) || state.is(BlockTags.BASE_STONE_OVERWORLD);
+              }
+          }
+          EOF
+
+          # 2. Создаем класс коллизии конечностей
+          cat << 'EOF' > src/main/java/com/realisticclimbing/LimbCollision.java
+          package com.realisticclimbing;
+          import net.minecraft.world.phys.Vec3;
+
+          public class LimbCollision {
+              private static final double LIMB_RADIUS = 0.15; 
+              public static Vec3[] resolveCollisions(Vec3[] positions) {
+                  Vec3[] resolved = new Vec3[positions.length];
+                  System.arraycopy(positions, 0, resolved, 0, positions.length);
+                  double minDistance = LIMB_RADIUS * 2;
+                  for (int i = 0; i < resolved.length; i++) {
+                      for (int j = i + 1; j < resolved.length; j++) {
+                          Vec3 posA = resolved[i];
+                          Vec3 posB = resolved[j];
+                          Vec3 delta = posA.subtract(posB);
+                          double distance = delta.length();
+                          if (distance > 0 && distance < minDistance) {
+                              double overlap = minDistance - distance;
+                              Vec3 pushVector = delta.normalize().scale(overlap / 2.0);
+                              resolved[i] = resolved[i].add(pushVector);
+                              resolved[j] = resolved[j].subtract(pushVector);
+                          }
+                      }
+                  }
+                  return resolved;
+              }
+          }
+          EOF
+
+          # 3. Полностью перезаписываем главный класс мода со всеми интеграциями
+          cat << 'EOF' > src/main/java/com/realisticclimbing/RealisticClimbingMod.java
+          package com.realisticclimbing;
+          import com.mojang.blaze3d.vertex.PoseStack;
+          import com.mojang.blaze3d.vertex.VertexConsumer;
+          import net.minecraft.client.KeyMapping;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.model.PlayerModel;
+          import net.minecraft.client.player.AbstractClientPlayer;
+          import net.minecraft.client.renderer.LevelRenderer;
+          import net.minecraft.client.renderer.MultiBufferSource;
+          import net.minecraft.client.renderer.RenderType;
+          import net.minecraft.core.Direction;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.util.Mth;
+          import net.minecraft.world.entity.player.Player;
+          import net.minecraft.world.level.ClipContext;
+          import net.minecraft.world.level.block.state.BlockState;
+          import net.minecraft.world.phys.AABB;
           import net.minecraft.world.phys.BlockHitResult;
           import net.minecraft.world.phys.HitResult;
           import net.minecraft.world.phys.Vec3;
           import net.minecraftforge.api.distmarker.Dist;
           import net.minecraftforge.client.event.RegisterKeyMappingsEvent;
-          import net.minecraftforge.client.event.RenderGuiOverlayEvent;
-          import net.minecraftforge.client.event.RenderHandEvent;
           import net.minecraftforge.client.event.RenderLevelStageEvent;
           import net.minecraftforge.client.event.RenderPlayerEvent;
-          import net.minecraftforge.client.event.ScreenEvent;
-          import net.minecraftforge.client.gui.overlay.VanillaGuiOverlay;
           import net.minecraftforge.common.MinecraftForge;
-          import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
           import net.minecraftforge.event.TickEvent;
-          import net.minecraftforge.eventbus.api.IEventBus;
           import net.minecraftforge.eventbus.api.SubscribeEvent;
           import net.minecraftforge.fml.common.Mod;
           import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
           import net.minecraftforge.fml.loading.FMLEnvironment;
-          import net.minecraftforge.network.NetworkEvent;
-          import net.minecraftforge.network.NetworkRegistry;
-          import net.minecraftforge.network.simple.SimpleChannel;
+          import org.lwjgl.glfw.GLFW;
           import net.minecraftforge.registries.DeferredRegister;
           import net.minecraftforge.registries.ForgeRegistries;
           import net.minecraftforge.registries.RegistryObject;
-          import org.jetbrains.annotations.Nullable;
-          import org.joml.Matrix4f;
-          import org.lwjgl.glfw.GLFW;
-
-          import java.util.ArrayList;
-          import java.util.List;
-          import java.util.function.Supplier;
+          import net.minecraft.world.item.Item;
+          import net.minecraft.world.item.ItemStack;
+          import net.minecraftforge.client.event.RenderHandEvent;
+          import com.mojang.math.Axis;
 
           @Mod("realisticclimbing")
           public class RealisticClimbingMod {
+              public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, "realisticclimbing");
+              public static final RegistryObject<Item> ICE_AXE = ITEMS.register("ice_axe", () -> new IceAxeItem(new Item.Properties()));
               public static final String MOD_ID = "realisticclimbing";
-
-              public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, MOD_ID);
-
-              public static final RegistryObject<Item> CLIMBING_BANDAGE = ITEMS.register("climbing_bandage",
-                      () -> new BandageItem(new Item.Properties().stacksTo(16)));
-
-              public static final RegistryObject<Item> CHALK_BAG = ITEMS.register("chalk_bag",
-                      () -> new ChalkBagItem(new Item.Properties().durability(8)));
-
-              public static final RegistryObject<Item> CLIMBING_PITON = ITEMS.register("climbing_piton",
-                      () -> new PitonItem(new Item.Properties().stacksTo(16)));
-
-              public static final RegistryObject<Item> SUMMIT_FLAGPOLE = ITEMS.register("summit_flagpole",
-                      () -> new FlagpoleItem(new Item.Properties().stacksTo(4)));
-
-              private static final String PROTOCOL_VERSION = "1";
-              public static final SimpleChannel NETWORK = NetworkRegistry.newSimpleChannel(
-                      new ResourceLocation(MOD_ID, "main"),
-                      () -> PROTOCOL_VERSION,
-                      PROTOCOL_VERSION::equals,
-                      PROTOCOL_VERSION::equals
-              );
-
               public static KeyMapping KEY_TOGGLE_CLIMB;
               public static KeyMapping KEY_LEFT_HAND;
               public static KeyMapping KEY_RIGHT_HAND;
               public static KeyMapping KEY_LEFT_FOOT;
               public static KeyMapping KEY_RIGHT_FOOT;
-              public static KeyMapping KEY_USE_CHALK;
-              public static KeyMapping KEY_PLACE_PITON;
-              public static KeyMapping KEY_BANDAGE;
-              public static KeyMapping KEY_INSPECT_HEALTH; // H - Показать Тарковский HUD здоровья на экране
-
               public static boolean climbingActive = false;
               public static float stamina = 100.0f;
               public static float stability = 1.0f;
-
-              public static double climbSessionStartY = 64.0;
-              public static double totalVerticalMetersClimbed = 0.0;
-              public static double lastClimbTrackY = 64.0;
-              public static double currentRouteGainY = 0.0;
-
-              public static final List<Vec3> PLACED_FLAGS = new ArrayList<>();
-              public static int summitBannerTicks = 0;
-              public static double summitConqueredAltitude = 0.0;
-              public static double summitConqueredClimbed = 0.0;
-
-              public static boolean mantlingActive = false;
-              public static int mantleTicks = 0;
-              public static final int MAX_MANTLE_TICKS = 18;
-              public static Vec3 mantleStartPos = Vec3.ZERO;
-              public static Vec3 mantleTargetPos = Vec3.ZERO;
-              public static Vec3 mantleLeftHandPos = Vec3.ZERO;
-              public static Vec3 mantleRightHandPos = Vec3.ZERO;
-
-              public static int chalkAnimTicks = 0;
-              public static int pitonAnimTicks = 0;
-              public static int fallFlailTicks = 0;
-              public static int pullUpAnimTicks = 0;
-              public static int bandageAnimTicks = 0;
-
-              public static float chalkLevel = 100.0f;
-              public static float headHealth = 100.0f;
-              public static float thoraxHealth = 100.0f;
-              public static float stomachHealth = 100.0f;
-              public static float bloodLoss = 0.0f;
-              public static double prevFallSpeed = 0.0;
-              public static Vec3 lastPitonStrikePos = Vec3.ZERO;
-
-              public static final List<Vec3> PLACED_PITONS = new ArrayList<>();
-              public static boolean hangingOnRope = false;
-              public static double maxRopeSlack = 3.8;
-
-              public static Vec3 currentWind = Vec3.ZERO;
-              public static float windSpeed = 0.0f;
-              public static float pressureKPa = 101.3f;
-              public static float hypoxiaFactor = 0.0f;
-              public static int gustTimer = 0;
-              public static boolean isGusting = false;
-              public static float lockedWallYaw = 0.0f;
 
               public static class Limb {
                   public final String name;
                   public final boolean isHand;
                   public final boolean isLeft;
                   public boolean locked = false;
-                  public boolean reaching = false;
-                  public float moveProgress = 1.0f;
-                  public Vec3 startPos = Vec3.ZERO;
-                  public Vec3 prevPos = Vec3.ZERO;
                   public Vec3 currentPos = Vec3.ZERO;
                   public Vec3 targetPos = Vec3.ZERO;
                   public Vec3 elbowOrKneePos = Vec3.ZERO;
                   public float gripQuality = 1.0f;
-
-                  public float health = 100.0f;
-                  public boolean bleeding = false;
-                  public boolean dislocated = false;
-                  public boolean fractured = false;
-
                   public Limb(String name, boolean isHand, boolean isLeft) {
                       this.name = name;
                       this.isHand = isHand;
                       this.isLeft = isLeft;
-                  }
-
-                  public Vec3 getRenderPos(float partialTick) {
-                      return prevPos.lerp(currentPos, partialTick);
-                  }
-
-                  public float getEffectiveness() {
-                      if (fractured || health < 20.0f) return 0.0f;
-                      float eff = health / 100.0f;
-                      if (dislocated) eff *= 0.45f;
-                      if (bleeding) eff *= 0.75f;
-                      return Mth.clamp(eff, 0.1f, 1.0f);
                   }
               }
 
@@ -584,390 +158,13 @@ jobs:
               };
 
               public RealisticClimbingMod() {
-                  IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
-                  ITEMS.register(modBus);
-                  modBus.addListener(this::addCreativeTabItems);
-
-                  NETWORK.registerMessage(0, PacketConsumeClimbItem.class,
-                          PacketConsumeClimbItem::encode,
-                          PacketConsumeClimbItem::decode,
-                          PacketConsumeClimbItem::handle);
-
+                  ITEMS.register(FMLJavaModLoadingContext.get().getModEventBus());
                   if (FMLEnvironment.dist == Dist.CLIENT) {
-                      modBus.addListener(ClientEvents::registerKeys);
+                      FMLJavaModLoadingContext.get().getModEventBus().addListener(ClientEvents::registerKeys);
                       MinecraftForge.EVENT_BUS.register(ClientEvents.class);
                   }
               }
 
-              private void addCreativeTabItems(BuildCreativeModeTabContentsEvent event) {
-                  if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES || event.getTabKey() == CreativeModeTabs.COMBAT) {
-                      event.accept(CLIMBING_BANDAGE);
-                      event.accept(CHALK_BAG);
-                      event.accept(CLIMBING_PITON);
-                      event.accept(SUMMIT_FLAGPOLE);
-                  }
-              }
-
-              // =========================================================================
-              // КАСТОМНЫЕ ПРЕДМЕТЫ В ИНВЕНТАРЕ
-              // =========================================================================
-              public static class BandageItem extends Item {
-                  public BandageItem(Properties props) { super(props); }
-
-                  @Override
-                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
-                      ItemStack stack = player.getItemInHand(hand);
-                      if (level.isClientSide) {
-                          // При ПКМ бинтом сразу открываем интерактивную мини-игру (Зажми Shift+ПКМ для тренировки шины)
-                          ClientEvents.openMedicalMinigame(player, player.isShiftKeyDown(), false);
-                      }
-                      return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
-                  }
-
-                  @Override
-                  public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
-                      tooltip.add(Component.literal("ПКМ или клавиша B — Мини-игра бинтования руки / наложения шины").withStyle(ChatFormatting.YELLOW));
-                      tooltip.add(Component.literal("Shift + ПКМ — Принудительно открыть мини-игру с шиной").withStyle(ChatFormatting.GRAY));
-                      tooltip.add(Component.literal("Крафт: 2 Нити + 1 Шерсть + 2 Палки + 1 Бумага").withStyle(ChatFormatting.DARK_GREEN));
-                  }
-              }
-
-              public static class ChalkBagItem extends Item {
-                  public ChalkBagItem(Properties props) { super(props); }
-
-                  @Override
-                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
-                      ItemStack stack = player.getItemInHand(hand);
-                      if (level.isClientSide) {
-                          ClientEvents.applyChalkEffectsClient(player);
-                      } else if (!player.getAbilities().instabuild) {
-                          stack.hurtAndBreak(1, player, p -> p.broadcastBreakEvent(hand));
-                      }
-                      return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
-                  }
-
-                  @Override
-                  public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
-                      tooltip.add(Component.literal("Сушит ладони и повышает трение до 100% (Клавиша G или ПКМ)").withStyle(ChatFormatting.GRAY));
-                      tooltip.add(Component.literal("Крафт: 3 Костной муки + 3 Кожи + 1 Кремень").withStyle(ChatFormatting.DARK_GREEN));
-                  }
-              }
-
-              public static class PitonItem extends Item {
-                  public PitonItem(Properties props) { super(props); }
-
-                  @Override
-                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
-                      ItemStack stack = player.getItemInHand(hand);
-                      Vec3 eye = player.getEyePosition();
-                      Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
-                      BlockHitResult hit = level.clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
-                      if (hit.getType() == HitResult.Type.BLOCK) {
-                          if (level.isClientSide) {
-                              ClientEvents.placePitonEffectClient(player, hit.getLocation());
-                          } else if (!player.getAbilities().instabuild) {
-                              stack.shrink(1);
-                          }
-                          return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
-                      }
-                      return InteractionResultHolder.fail(stack);
-                  }
-
-                  @Override
-                  public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
-                      tooltip.add(Component.literal("Точка страховки в скале с динамической веревкой (Клавиша V или ПКМ)").withStyle(ChatFormatting.GRAY));
-                      tooltip.add(Component.literal("Крафт: 2 Железных слитка + 2 Железных самородка").withStyle(ChatFormatting.DARK_GREEN));
-                  }
-              }
-
-              public static class FlagpoleItem extends Item {
-                  public FlagpoleItem(Properties props) { super(props); }
-
-                  @Override
-                  public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
-                      ItemStack stack = player.getItemInHand(hand);
-                      Vec3 eye = player.getEyePosition();
-                      Vec3 reach = eye.add(player.getLookAngle().scale(3.0));
-                      BlockHitResult hit = level.clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
-                      if (hit.getType() == HitResult.Type.BLOCK) {
-                          if (level.isClientSide) {
-                              ClientEvents.plantSummitFlagpoleClient(player, hit.getLocation());
-                          } else if (!player.getAbilities().instabuild) {
-                              stack.shrink(1);
-                          }
-                          return InteractionResultHolder.sidedSuccess(stack, level.isClientSide());
-                      }
-                      return InteractionResultHolder.fail(stack);
-                  }
-
-                  @Override
-                  public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
-                      tooltip.add(Component.literal("Установите на пике горы для фиксации рекорда восхождения (ПКМ)").withStyle(ChatFormatting.GOLD));
-                      tooltip.add(Component.literal("Крафт: 2 Железных слитка + 2 Золотых самородка + 3 Шерсти").withStyle(ChatFormatting.DARK_GREEN));
-                  }
-              }
-
-              public static class PacketConsumeClimbItem {
-                  private final int itemType;
-
-                  public PacketConsumeClimbItem(int itemType) {
-                      this.itemType = itemType;
-                  }
-
-                  public static void encode(PacketConsumeClimbItem msg, FriendlyByteBuf buf) {
-                      buf.writeInt(msg.itemType);
-                  }
-
-                  public static PacketConsumeClimbItem decode(FriendlyByteBuf buf) {
-                      return new PacketConsumeClimbItem(buf.readInt());
-                  }
-
-                  public static void handle(PacketConsumeClimbItem msg, Supplier<NetworkEvent.Context> ctx) {
-                      ctx.get().enqueueWork(() -> {
-                          ServerPlayer player = ctx.get().getSender();
-                          if (player == null || player.getAbilities().instabuild) return;
-
-                          Item targetItem = msg.itemType == 0 ? CLIMBING_BANDAGE.get()
-                                  : (msg.itemType == 1 ? CHALK_BAG.get()
-                                  : (msg.itemType == 2 ? CLIMBING_PITON.get() : SUMMIT_FLAGPOLE.get()));
-
-                          for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                              ItemStack stack = player.getInventory().getItem(i);
-                              if (stack.is(targetItem)) {
-                                  if (msg.itemType == 1) {
-                                      stack.hurtAndBreak(1, player, p -> {});
-                                  } else {
-                                      stack.shrink(1);
-                                  }
-                                  player.inventoryMenu.broadcastChanges();
-                                  break;
-                              }
-                          }
-                      });
-                      ctx.get().setPacketHandled(true);
-                  }
-              }
-
-              // =========================================================================
-              // ИНТЕРАКТИВНЫЙ ЭКРАН МИНИ-ИГР МЕДИЦИНЫ (БИНТОВАНИЕ РУКИ И НАЛОЖЕНИЕ ШИНЫ)
-              // =========================================================================
-              public static class MedicalMinigameScreen extends Screen {
-                  private final Limb targetLimb;
-                  private boolean isSplintGame;
-
-                  private float bandageProgress = 0.0f;
-                  private final List<Integer> wrapOffsets = new ArrayList<>();
-
-                  private int currentStrap = 0;
-                  private final boolean[] strapsLocked = new boolean[]{false, false, false};
-                  private final float[] targetZoneCenters = new float[]{0.35f, 0.68f, 0.50f};
-                  private float sliderPos = 0.0f;
-                  private float sliderSpeed = 0.032f;
-                  private boolean sliderForward = true;
-                  private int errorFlashTicks = 0;
-
-                  protected MedicalMinigameScreen(Limb targetLimb, boolean isSplintGame) {
-                      super(Component.literal(isSplintGame ? "Наложение шины" : "Перевязка раны"));
-                      this.targetLimb = targetLimb;
-                      this.isSplintGame = isSplintGame;
-                  }
-
-                  @Override
-                  public boolean isPauseScreen() {
-                      return false;
-                  }
-
-                  @Override
-                  public void tick() {
-                      super.tick();
-                      bandageAnimTicks = 10;
-                      if (errorFlashTicks > 0) errorFlashTicks--;
-
-                      if (isSplintGame) {
-                          if (sliderForward) {
-                              sliderPos += sliderSpeed;
-                              if (sliderPos >= 1.0f) {
-                                  sliderPos = 1.0f;
-                                  sliderForward = false;
-                              }
-                          } else {
-                              sliderPos -= sliderSpeed;
-                              if (sliderPos <= 0.0f) {
-                                  sliderPos = 0.0f;
-                                  sliderForward = true;
-                              }
-                          }
-                      }
-                  }
-
-                  @Override
-                  public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-                      if (!isSplintGame && button == 0) {
-                          int cx = this.width / 2;
-                          int cy = this.height / 2 + 10;
-                          if (Math.abs(mouseX - cx) < 135 && Math.abs(mouseY - cy) < 80) {
-                              double moveDist = Math.hypot(dragX, dragY);
-                              if (moveDist > 1.0) {
-                                  bandageProgress = Math.min(100.0f, bandageProgress + (float)(moveDist * 0.28));
-                                  int relX = (int) Mth.clamp(mouseX - (cx - 80), 8, 152);
-                                  if (wrapOffsets.size() < 28 && (wrapOffsets.isEmpty() || Math.abs(wrapOffsets.get(wrapOffsets.size() - 1) - relX) > 5)) {
-                                      wrapOffsets.add(relX);
-                                      if (Minecraft.getInstance().player != null) {
-                                          Minecraft.getInstance().player.playSound(SoundEvents.WOOL_STEP, 0.5f, 1.35f);
-                                      }
-                                  }
-                                  if (bandageProgress >= 100.0f) {
-                                      completeMinigameSuccess();
-                                  }
-                              }
-                          }
-                      }
-                      return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
-                  }
-
-                  @Override
-                  public boolean mouseClicked(double mouseX, double mouseY, int button) {
-                      int cx = this.width / 2;
-                      int cy = this.height / 2;
-                      int y0 = cy - 82;
-
-                      // Кнопка переключения режима внутри окна (Бинт <-> Шина), чтобы всегда можно было протестировать оба режима
-                      if (mouseY >= y0 + 4 && mouseY <= y0 + 18 && Math.abs(mouseX - (cx + 95)) <= 26) {
-                          this.isSplintGame = !this.isSplintGame;
-                          return true;
-                      }
-
-                      if (isSplintGame && button == 0 && currentStrap < 3) {
-                          float center = targetZoneCenters[currentStrap];
-                          float halfWidth = 0.12f;
-                          if (Math.abs(sliderPos - center) <= halfWidth) {
-                              strapsLocked[currentStrap] = true;
-                              currentStrap++;
-                              sliderSpeed += 0.012f;
-                              if (Minecraft.getInstance().player != null) {
-                                  Minecraft.getInstance().player.playSound(SoundEvents.ARMOR_EQUIP_IRON, 0.9f, 1.25f);
-                                  Minecraft.getInstance().player.playSound(SoundEvents.SKELETON_STEP, 0.7f, 0.85f);
-                              }
-                              if (currentStrap >= 3) {
-                                  completeMinigameSuccess();
-                              }
-                          } else {
-                              errorFlashTicks = 12;
-                              if (Minecraft.getInstance().player != null) {
-                                  Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_HURT, 0.7f, 1.1f);
-                              }
-                          }
-                          return true;
-                      }
-                      return super.mouseClicked(mouseX, mouseY, button);
-                  }
-
-                  private void completeMinigameSuccess() {
-                      Player player = Minecraft.getInstance().player;
-                      if (player != null) {
-                          NETWORK.sendToServer(new PacketConsumeClimbItem(0));
-                          ClientEvents.finishMinigameHeal(player, targetLimb, isSplintGame);
-                      }
-                      this.onClose();
-                  }
-
-                  @Override
-                  public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
-                      this.renderBackground(gui);
-                      int cx = this.width / 2;
-                      int cy = this.height / 2;
-
-                      int boxW = 256;
-                      int boxH = 168;
-                      int x0 = cx - boxW / 2;
-                      int y0 = cy - boxH / 2;
-
-                      int bgCol = errorFlashTicks > 0 ? 0xE83A0D0D : 0xE80B0F14;
-                      int brdCol = isSplintGame ? 0xFFE89825 : 0xFFE63946;
-                      gui.fill(x0, y0, x0 + boxW, y0 + boxH, bgCol);
-                      gui.renderOutline(x0, y0, boxW, boxH, brdCol);
-
-                      // Кнопка переключения Бинт / Шина в правом верхнем углу мини-игры
-                      gui.fill(cx + 68, y0 + 5, cx + 122, y0 + 18, 0xFF1E293B);
-                      gui.renderOutline(cx + 68, y0 + 5, 54, 13, 0xFF64748B);
-                      gui.drawCenteredString(this.font, isSplintGame ? "§e[К Бинту]" : "§6[К Шине]", cx + 95, y0 + 7, 0xFFFFFF);
-
-                      if (!isSplintGame) {
-                          gui.drawCenteredString(this.font, "§c§lПЕРЕВЯЗКА РАНЫ (" + targetLimb.name + ")", cx - 20, y0 + 8, 0xFFFFFF);
-                          gui.drawCenteredString(this.font, "§7Зажмите §fЛКМ §7и водите мышью по руке для намотки бинта", cx, y0 + 24, 0xAAAAAA);
-
-                          int armX = cx - 80;
-                          int armY = cy - 12;
-                          gui.fill(armX, armY, armX + 160, armY + 38, 0xFFD49B7E);
-                          gui.renderOutline(armX, armY, 160, 38, 0xFF8C583A);
-
-                          gui.fill(armX + 22, armY + 15, armX + 138, armY + 23, 0xFF9E0B0B);
-                          gui.fill(armX + 35, armY + 13, armX + 120, armY + 25, 0xFFD91818);
-
-                          for (int offset : wrapOffsets) {
-                              int wx = armX + offset;
-                              gui.fill(wx - 6, armY - 3, wx + 6, armY + 41, 0xF2F0F4F8);
-                              gui.renderOutline(wx - 6, armY - 3, 12, 44, 0xFFB8C4CE);
-                          }
-
-                          gui.fill(mouseX - 8, mouseY - 12, mouseX + 8, mouseY + 12, 0xFFFFFFFF);
-                          gui.renderOutline(mouseX - 8, mouseY - 12, 16, 24, 0xFF7A8B99);
-
-                          gui.fill(x0 + 25, y0 + 132, x0 + boxW - 25, y0 + 146, 0xFF161C24);
-                          int fillW = (int) ((boxW - 50) * (bandageProgress / 100.0f));
-                          gui.fill(x0 + 25, y0 + 132, x0 + 25 + fillW, y0 + 146, 0xFF38E878);
-                          gui.renderOutline(x0 + 25, y0 + 132, boxW - 50, 14, 0xFF4A5A6A);
-                          gui.drawCenteredString(this.font, String.format("Намотано: %.0f%%", bandageProgress), cx, y0 + 135, 0xFFFFFF);
-                      } else {
-                          gui.drawCenteredString(this.font, "§6§lНАЛОЖЕНИЕ ШИНЫ (" + targetLimb.name + ")", cx - 20, y0 + 8, 0xFFFFFF);
-                          gui.drawCenteredString(this.font, "§7Жмите §fЛКМ §7в зеленой зоне, чтобы затянуть 3 ремня шины", cx, y0 + 24, 0xAAAAAA);
-
-                          int armX = cx - 85;
-                          int armY = cy - 18;
-                          gui.fill(armX, armY, armX + 170, armY + 42, 0xFF222A34);
-                          gui.renderOutline(armX, armY, 170, 42, 0xFF526274);
-
-                          int fractureOffset = (3 - currentStrap) * 4;
-                          gui.fill(armX + 12, armY + 16 - fractureOffset, cx - 2, armY + 25 - fractureOffset, 0xFFE2E8F0);
-                          gui.fill(cx + 2, armY + 16 + fractureOffset, armX + 158, armY + 25 + fractureOffset, 0xFFE2E8F0);
-
-                          gui.fill(armX + 8, armY + 34, armX + 162, armY + 40, 0xFF94A3B8);
-
-                          for (int s = 0; s < 3; s++) {
-                              int sx = armX + 30 + s * 50;
-                              int strapCol = strapsLocked[s] ? 0xFF2EC4B6 : (s == currentStrap ? 0xFFF4A261 : 0xFF475569);
-                              gui.fill(sx, armY - 4, sx + 14, armY + 46, strapCol);
-                              gui.renderOutline(sx, armY - 4, 14, 50, 0xFF0F172A);
-                          }
-
-                          int barX = x0 + 25;
-                          int barY = y0 + 122;
-                          int barW = boxW - 50;
-                          gui.fill(barX, barY, barX + barW, barY + 18, 0xFF141A22);
-
-                          if (currentStrap < 3) {
-                              float zoneCenter = targetZoneCenters[currentStrap];
-                              int zStart = barX + (int) ((zoneCenter - 0.12f) * barW);
-                              int zEnd = barX + (int) ((zoneCenter + 0.12f) * barW);
-                              gui.fill(zStart, barY, zEnd, barY + 18, 0xAA2EC466);
-                              gui.renderOutline(zStart, barY, zEnd - zStart, 18, 0xFF52FF88);
-                          }
-
-                          int knobX = barX + (int) (sliderPos * barW);
-                          gui.fill(knobX - 3, barY - 4, knobX + 3, barY + 22, 0xFFFFFFFF);
-                          gui.renderOutline(barX, barY, barW, 18, 0xFF64748B);
-                          gui.drawCenteredString(this.font, "Затянуто ремней: " + currentStrap + " / 3", cx, y0 + 145, 0xE2E8F0);
-                      }
-
-                      super.render(gui, mouseX, mouseY, partialTick);
-                  }
-              }
-
-              // =========================================================================
-              // КЛИЕНТСКАЯ ЛОГИКА, ИНВЕНТАРНЫЙ ТАРКОВ-ХУД, КОМПАС И АЛЬТИМЕТР
-              // =========================================================================
               public static class ClientEvents {
                   public static void registerKeys(RegisterKeyMappingsEvent event) {
                       KEY_TOGGLE_CLIMB = new KeyMapping("Вкл/Выкл Скалолазание", GLFW.GLFW_KEY_R, "Realistic Climbing");
@@ -975,20 +172,11 @@ jobs:
                       KEY_RIGHT_HAND = new KeyMapping("Перехват: Правая рука", GLFW.GLFW_KEY_E, "Realistic Climbing");
                       KEY_LEFT_FOOT = new KeyMapping("Опора: Левая нога", GLFW.GLFW_KEY_Z, "Realistic Climbing");
                       KEY_RIGHT_FOOT = new KeyMapping("Опора: Правая нога", GLFW.GLFW_KEY_C, "Realistic Climbing");
-                      KEY_USE_CHALK = new KeyMapping("Нанести магнезию (Мел)", GLFW.GLFW_KEY_G, "Realistic Climbing");
-                      KEY_PLACE_PITON = new KeyMapping("Забить страховочный крюк", GLFW.GLFW_KEY_V, "Realistic Climbing");
-                      KEY_BANDAGE = new KeyMapping("Мини-игра: Бинт / Шина", GLFW.GLFW_KEY_B, "Realistic Climbing");
-                      KEY_INSPECT_HEALTH = new KeyMapping("Показать схему здоровья (Тарков HUD)", GLFW.GLFW_KEY_H, "Realistic Climbing");
-
                       event.register(KEY_TOGGLE_CLIMB);
                       event.register(KEY_LEFT_HAND);
                       event.register(KEY_RIGHT_HAND);
                       event.register(KEY_LEFT_FOOT);
                       event.register(KEY_RIGHT_FOOT);
-                      event.register(KEY_USE_CHALK);
-                      event.register(KEY_PLACE_PITON);
-                      event.register(KEY_BANDAGE);
-                      event.register(KEY_INSPECT_HEALTH);
                   }
 
                   @SubscribeEvent
@@ -998,81 +186,22 @@ jobs:
                       Minecraft mc = Minecraft.getInstance();
                       if (player != mc.player) return;
 
-                      for (Limb l : LIMBS) {
-                          l.prevPos = l.currentPos;
-                      }
-
-                      if (chalkAnimTicks > 0) chalkAnimTicks--;
-                      if (pitonAnimTicks > 0) pitonAnimTicks--;
-                      if (pullUpAnimTicks > 0) pullUpAnimTicks--;
-                      if (bandageAnimTicks > 0) bandageAnimTicks--;
-                      if (summitBannerTicks > 0) summitBannerTicks--;
-                      if (fallFlailTicks > 0) {
-                          fallFlailTicks--;
-                          if (player.onGround() || climbingActive || mantlingActive) fallFlailTicks = 0;
-                      }
-
-                      if (climbingActive || mantlingActive) {
-                          double dy = player.getY() - lastClimbTrackY;
-                          if (dy > 0.001 && dy < 1.5) {
-                              totalVerticalMetersClimbed += dy;
-                          }
-                          currentRouteGainY = Math.max(0.0, player.getY() - climbSessionStartY);
-                      }
-                      lastClimbTrackY = player.getY();
-
-                      updateAtmosphereAndWind(player);
-                      updateMedicalAndInjuries(player);
-
-                      if (mantlingActive) {
-                          updateLedgeMantle(player);
-                          return;
-                      }
-
-                      // Клавиша B открывает медицинскую мини-игру
-                      while (KEY_BANDAGE.consumeClick()) {
-                          openMedicalMinigame(player, player.isShiftKeyDown(), true);
-                      }
-
-                      while (KEY_USE_CHALK.consumeClick()) {
-                          tryUseChalkHotkey(player);
-                      }
-
-                      while (KEY_PLACE_PITON.consumeClick()) {
-                          tryPlacePitonHotkey(player);
-                      }
-
                       while (KEY_TOGGLE_CLIMB.consumeClick()) {
                           if (!climbingActive) {
                               if (tryEngageWall(player)) {
                                   climbingActive = true;
-                                  hangingOnRope = false;
-                                  fallFlailTicks = 0;
-                                  climbSessionStartY = player.getY();
-                                  lastClimbTrackY = player.getY();
+                                  player.displayClientMessage(Component.literal("§a[Climbing] Захват стены! Q/E - Руки, Z/C - Ноги"), true);
+                              } else {
+                                  player.displayClientMessage(Component.literal("§c[Climbing] Подойди вплотную к стене!"), true);
                               }
                           } else {
-                              disengageClimb(player, false);
-                          }
-                      }
-
-                      if (!climbingActive && !player.onGround() && mc.options.keyJump.isDown() && player.zza > 0) {
-                          if (tryStartLedgeMantle(player)) {
-                              return;
+                              disengageClimb(player, "§eВы отпустили стену");
                           }
                       }
 
                       if (!climbingActive) {
-                          float recoveryRate = 0.45f * (1.0f - hypoxiaFactor * 0.60f) * (1.0f - bloodLoss * 0.005f);
-                          stamina = Math.min(100.0f, stamina + Math.max(0.05f, recoveryRate));
-                          updateRopeArrestPhysics(player);
+                          stamina = Math.min(100.0f, stamina + 0.4f);
                           return;
-                      }
-
-                      if (mc.options.keyJump.isDown()) {
-                          if (tryStartLedgeMantle(player)) {
-                              return;
-                          }
                       }
 
                       handleLimbInput(player, 0, KEY_LEFT_HAND);
@@ -1080,58 +209,28 @@ jobs:
                       handleLimbInput(player, 2, KEY_LEFT_FOOT);
                       handleLimbInput(player, 3, KEY_RIGHT_FOOT);
 
-                      float sweatRate = player.level().isRaining() ? 0.22f : 0.07f;
-                      chalkLevel = Math.max(0.0f, chalkLevel - sweatRate);
+                      Vec3[] currentPositions = new Vec3[4];
+                      for (int i = 0; i < 4; i++) {
+                          LIMBS[i].currentPos = LIMBS[i].currentPos.lerp(LIMBS[i].targetPos, 0.35);
+                          currentPositions[i] = LIMBS[i].currentPos;
+                      }
 
+                      currentPositions = LimbCollision.resolveCollisions(currentPositions);
+                      
                       int lockedCount = 0;
                       int handsLocked = 0;
                       Vec3 centerOfSupport = Vec3.ZERO;
 
-                      double chalkBonus = (chalkLevel / 100.0) * 0.12;
-
                       for (int i = 0; i < 4; i++) {
                           Limb limb = LIMBS[i];
-                          Vec3 rootPos = getJointRoot(player, limb, 1.0f);
-
-                          if (limb.fractured || limb.health < 20.0f) {
-                              limb.fractured = true;
-                              limb.locked = false;
-                          }
-
-                          if (limb.moveProgress < 1.0f) {
-                              float speed = 0.20f * Math.max(0.45f, limb.getEffectiveness());
-                              limb.moveProgress = Math.min(1.0f, limb.moveProgress + speed);
-                              Vec3 baseLerp = limb.startPos.lerp(limb.targetPos, limb.moveProgress);
-                              Vec3 wallOut = Vec3.directionFromRotation(0, lockedWallYaw).scale(-Math.sin(limb.moveProgress * Math.PI) * 0.30);
-                              limb.currentPos = baseLerp.add(wallOut);
-                              if (limb.moveProgress >= 1.0f) {
-                                  limb.reaching = false;
-                                  player.playSound(SoundEvents.STONE_STEP, 0.35f, limb.isHand ? 1.3f : 0.9f);
-                              }
-                          } else if (limb.locked) {
-                              limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.55);
-                          } else {
-                              Vec3 hangOffset = new Vec3(0, limb.isHand ? -0.35 : -0.65, 0);
-                              limb.currentPos = limb.currentPos.lerp(rootPos.add(hangOffset), 0.25);
-                          }
-
+                          limb.currentPos = currentPositions[i];
+                          Vec3 rootPos = getJointRoot(player, limb);
                           limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
 
-                          double limbMaxStretch = (1.62 - (hypoxiaFactor * 0.22) + chalkBonus) * (0.65 + 0.35 * limb.getEffectiveness());
-
-                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > limbMaxStretch) {
+                          if (limb.locked && rootPos.distanceTo(limb.currentPos) > 1.65) {
                               limb.locked = false;
-                              inflictLimbRipInjury(player, limb);
+                              player.displayClientMessage(Component.literal("§e[!] " + limb.name + " сорвалась из-за натяжения!"), true);
                           }
-
-                          float slipChance = (chalkLevel < 15.0f ? 0.006f : 0.0f) + (limb.bleeding ? 0.008f : 0.0f) + (limb.dislocated ? 0.006f : 0.0f);
-                          if (limb.locked && limb.isHand && slipChance > 0.0f && (windSpeed > 10.0f || stamina < 50.0f)) {
-                              if (player.level().random.nextFloat() < slipChance) {
-                                  limb.locked = false;
-                                  inflictSkinAbrasion(player, limb);
-                              }
-                          }
-
                           if (limb.locked) {
                               lockedCount++;
                               if (limb.isHand) handsLocked++;
@@ -1139,876 +238,93 @@ jobs:
                           }
                       }
 
-                      if (lockedCount == 1 && windSpeed > 11.0f && player.level().random.nextFloat() < 0.015f) {
-                          for (Limb l : LIMBS) {
-                              if (l.locked && !l.dislocated) {
-                                  l.dislocated = true;
-                                  l.health = Math.max(25.0f, l.health - 22.0f);
-                                  player.playSound(SoundEvents.SKELETON_HURT, 0.9f, 0.65f);
-                              }
-                          }
-                      }
-
                       if (lockedCount < 2 || handsLocked == 0) {
-                          disengageClimb(player, true);
+                          disengageClimb(player, "§c[СРЫВ!] Потеря опоры — слишком мало точек захвата!");
                           return;
                       }
 
                       centerOfSupport = centerOfSupport.scale(1.0 / lockedCount);
-
-                      float totalLimbEff = 0.0f;
-                      for (Limb l : LIMBS) if (l.locked) totalLimbEff += l.getEffectiveness();
-
-                      float gripResistance = (lockedCount == 4) ? 0.25f : (lockedCount == 3 ? 0.75f : 1.45f);
-                      float windInstability = (windSpeed / 28.0f) * gripResistance;
-                      float chalkStabilityBonus = (chalkLevel / 100.0f) * 0.12f;
-
-                      stability = Mth.clamp(
-                              (totalLimbEff / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f) - windInstability + chalkStabilityBonus,
-                              0.0f, 1.0f
-                      );
-
-                      float chalkStaminaFactor = 1.25f - (chalkLevel / 100.0f) * 0.45f;
-                      float injuryPainMultiplier = 1.0f + ((4.0f - totalLimbEff) * 0.35f) + (bloodLoss * 0.01f);
-                      float altitudeMultiplier = 1.0f + (hypoxiaFactor * 1.8f);
-                      float windStrain = (windSpeed * 0.004f) * gripResistance;
-                      float drain = ((4 - lockedCount) * 0.16f + 0.035f + windStrain) * altitudeMultiplier * chalkStaminaFactor * injuryPainMultiplier;
+                      stability = Mth.clamp((lockedCount / 4.0f) - (float)(player.position().distanceTo(centerOfSupport) * 0.15f), 0.0f, 1.0f);
+                      float drain = (4 - lockedCount) * 0.18f + 0.04f;
                       stamina = Math.max(0.0f, stamina - drain);
 
-                      if (isGusting && windSpeed > 15.0f && lockedCount <= 2) {
-                          player.setDeltaMovement(currentWind.scale(0.85).add(0, -0.2, 0));
-                          disengageClimb(player, true);
+                      if (stamina <= 0.0f || stability < 0.12f) {
+                          disengageClimb(player, "§c[СРЫВ!] Закончились силы или потерян баланс!");
                           return;
                       }
 
-                      if (stamina <= 0.0f || stability < 0.10f) {
-                          player.setDeltaMovement(currentWind.scale(0.45));
-                          disengageClimb(player, true);
-                          return;
-                      }
-
-                      Vec3 lookDir = Vec3.directionFromRotation(0, lockedWallYaw);
-                      Vec3 idealBodyPos = centerOfSupport.subtract(lookDir.scale(0.42)).add(0, -0.85, 0);
-
+                      Vec3 lookDir = Vec3.directionFromRotation(0, player.getYRot());
+                      Vec3 idealBodyPos = centerOfSupport.subtract(lookDir.scale(0.45)).add(0, -0.85, 0);
                       Vec3 sideDir = lookDir.cross(new Vec3(0, 1, 0)).normalize();
                       double swayUp = (player.zza * 0.18);
                       double swaySide = (-player.xxa * 0.18);
-                      if (player.zza > 0.1f && pullUpAnimTicks == 0) pullUpAnimTicks = 10;
-
-                      double painTremor = (stamina < 35f || hypoxiaFactor > 0.45f || bloodLoss > 20f)
-                              ? Math.sin(player.tickCount * 0.65) * (0.025 + hypoxiaFactor * 0.03 + bloodLoss * 0.001)
-                              : 0.0;
-
-                      Vec3 windPushOffset = currentWind.scale(0.55 * gripResistance);
-
-                      Vec3 desiredPelvis = idealBodyPos
-                              .add(sideDir.scale(swaySide))
-                              .add(0, swayUp + painTremor, 0)
-                              .add(windPushOffset);
-
+                      double fatigueSway = (stamina < 35f) ? Math.sin(player.tickCount * 0.4) * 0.03 : 0.0;
+                      Vec3 desiredPelvis = idealBodyPos.add(sideDir.scale(swaySide)).add(0, swayUp + fatigueSway, 0);
                       Vec3 velocity = desiredPelvis.subtract(player.position()).scale(0.28);
-
                       player.setDeltaMovement(velocity);
                       player.fallDistance = 0.0f;
 
-                      player.yBodyRot = lockedWallYaw;
-                      player.yBodyRotO = lockedWallYaw;
-
-                      if (windSpeed > 8.0f && player.tickCount % 2 == 0) {
-                          Vec3 pPos = player.getEyePosition().add(
-                                  (player.level().random.nextDouble() - 0.5) * 3.0,
-                                  (player.level().random.nextDouble() - 0.5) * 2.0,
-                                  (player.level().random.nextDouble() - 0.5) * 3.0
-                          );
-                          player.level().addParticle(
-                                  player.getY() > 130 ? ParticleTypes.SNOWFLAKE : ParticleTypes.CLOUD,
-                                  pPos.x, pPos.y, pPos.z,
-                                  currentWind.x * 1.4, currentWind.y * 0.5, currentWind.z * 1.4
-                          );
+                      if (player.tickCount % 5 == 0) {
+                          String bar = String.format("§6Стамина: %.0f%% §7| §bБаланс: %.0f%% §7| §aОпор: %d/4", stamina, stability * 100f, lockedCount);
+                          player.displayClientMessage(Component.literal(bar), true);
                       }
-
-                      if (isGusting && gustTimer == 58) {
-                          player.playSound(SoundEvents.ELYTRA_FLYING, 0.45f, 1.6f);
-                      }
-                  }
-
-                  // Гарантированное открытие экрана мини-игры бинтования или шины
-                  public static void openMedicalMinigame(Player player, boolean forceSplint, boolean checkInventoryForHotkey) {
-                      if (checkInventoryForHotkey && !hasItemInInventory(player, CLIMBING_BANDAGE.get())) {
-                          player.displayClientMessage(Component.literal("§c[Медицина] Нет Перевязочного пакета (ИПП) в инвентаре!"), true);
-                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
-                          return;
-                      }
-
-                      Limb worstLimb = null;
-                      float lowestScore = 1000.0f;
-                      for (Limb l : LIMBS) {
-                          float score = l.health - (l.fractured ? 60f : 0f) - (l.dislocated ? 45f : 0f) - (l.bleeding ? 35f : 0f);
-                          if (score < lowestScore) {
-                              lowestScore = score;
-                              worstLimb = l;
-                          }
-                      }
-
-                      if (worstLimb == null) worstLimb = LIMBS[0];
-                      boolean needSplint = forceSplint || worstLimb.fractured || worstLimb.dislocated;
-                      Minecraft.getInstance().setScreen(new MedicalMinigameScreen(worstLimb, needSplint));
-                  }
-
-                  public static void finishMinigameHeal(Player player, Limb limb, boolean wasSplint) {
-                      bandageAnimTicks = 18;
-                      if (wasSplint) {
-                          limb.fractured = false;
-                          limb.dislocated = false;
-                          limb.health = Math.min(100.0f, Math.max(80.0f, limb.health + 55.0f));
-                          player.playSound(SoundEvents.ANVIL_USE, 0.5f, 1.6f);
-                      } else {
-                          limb.bleeding = false;
-                          limb.health = Math.min(100.0f, limb.health + 50.0f);
-                          headHealth = Math.min(100.0f, headHealth + 35.0f);
-                          thoraxHealth = Math.min(100.0f, thoraxHealth + 35.0f);
-                          stomachHealth = Math.min(100.0f, stomachHealth + 35.0f);
-                          bloodLoss = Math.max(0.0f, bloodLoss - 45.0f);
-                      }
-                      player.playSound(SoundEvents.WOOL_PLACE, 0.9f, 1.2f);
-                  }
-
-                  public static void plantSummitFlagpoleClient(Player player, Vec3 pos) {
-                      PLACED_FLAGS.add(pos);
-                      summitBannerTicks = 160;
-                      summitConqueredAltitude = player.getY();
-                      summitConqueredClimbed = Math.max(currentRouteGainY, totalVerticalMetersClimbed);
-
-                      player.playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
-                      player.playSound(SoundEvents.ANVIL_PLACE, 0.8f, 1.4f);
-
-                      for (int i = 0; i < 30; i++) {
-                          player.level().addParticle(
-                                  ParticleTypes.FIREWORK,
-                                  pos.x, pos.y + 1.4, pos.z,
-                                  (player.level().random.nextDouble() - 0.5) * 0.45,
-                                  0.25 + player.level().random.nextDouble() * 0.35,
-                                  (player.level().random.nextDouble() - 0.5) * 0.45
-                          );
-                      }
-                  }
-
-                  private static boolean tryStartLedgeMantle(Player player) {
-                      if (LIMBS[0].fractured && LIMBS[1].fractured) return false;
-                      if (stamina < 12.0f) return false;
-
-                      float yaw = climbingActive ? lockedWallYaw : player.getYRot();
-                      Vec3 forward = Vec3.directionFromRotation(0, yaw).normalize();
-                      Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
-                      Level level = player.level();
-
-                      for (double h = 0.2; h <= 2.3; h += 0.35) {
-                          Vec3 checkWall = player.position().add(0, h, 0).add(forward.scale(0.75));
-                          BlockPos ledgeBlock = BlockPos.containing(checkWall);
-                          BlockState wallState = level.getBlockState(ledgeBlock);
-
-                          if (!wallState.isAir() && wallState.isSolidRender(level, ledgeBlock)) {
-                              BlockPos above1 = ledgeBlock.above();
-                              BlockPos above2 = above1.above();
-                              if (!level.getBlockState(above1).isSolidRender(level, above1)
-                                      && !level.getBlockState(above2).isSolidRender(level, above2)) {
-
-                                  mantlingActive = true;
-                                  climbingActive = false;
-                                  hangingOnRope = false;
-                                  mantleTicks = 0;
-                                  lockedWallYaw = yaw;
-                                  mantleStartPos = player.position();
-                                  mantleTargetPos = new Vec3(
-                                          ledgeBlock.getX() + 0.5,
-                                          ledgeBlock.getY() + 1.02,
-                                          ledgeBlock.getZ() + 0.5
-                                  );
-
-                                  Vec3 edgeCenter = new Vec3(ledgeBlock.getX() + 0.5, ledgeBlock.getY() + 1.0, ledgeBlock.getZ() + 0.5)
-                                          .subtract(forward.scale(0.35));
-                                  mantleLeftHandPos = edgeCenter.add(right.scale(-0.32));
-                                  mantleRightHandPos = edgeCenter.add(right.scale(0.32));
-
-                                  LIMBS[0].currentPos = LIMBS[0].prevPos = mantleLeftHandPos;
-                                  LIMBS[1].currentPos = LIMBS[1].prevPos = mantleRightHandPos;
-
-                                  stamina = Math.max(0.0f, stamina - 10.0f);
-                                  player.playSound(SoundEvents.ARMOR_EQUIP_LEATHER, 0.9f, 0.95f);
-                                  player.playSound(SoundEvents.STONE_STEP, 0.7f, 1.1f);
-                                  return true;
-                              }
-                          }
-                      }
-                      return false;
-                  }
-
-                  private static void updateLedgeMantle(Player player) {
-                      mantleTicks++;
-                      float t = (float) mantleTicks / MAX_MANTLE_TICKS;
-
-                      double yProgress = Mth.clamp(t * 1.45, 0.0, 1.0);
-                      yProgress = 1.0 - Math.pow(1.0 - yProgress, 2.0);
-                      double xzProgress = Mth.clamp((t - 0.25) / 0.75, 0.0, 1.0);
-
-                      double curX = Mth.lerp(xzProgress, mantleStartPos.x, mantleTargetPos.x);
-                      double curY = Mth.lerp(yProgress, mantleStartPos.y, mantleTargetPos.y);
-                      double curZ = Mth.lerp(xzProgress, mantleStartPos.z, mantleTargetPos.z);
-
-                      Vec3 nextPos = new Vec3(curX, curY, curZ);
-                      player.setDeltaMovement(nextPos.subtract(player.position()));
-                      player.fallDistance = 0.0f;
-
-                      LIMBS[0].currentPos = mantleLeftHandPos;
-                      LIMBS[1].currentPos = mantleRightHandPos;
-
-                      if (mantleTicks >= MAX_MANTLE_TICKS) {
-                          mantlingActive = false;
-                          player.setPos(mantleTargetPos.x, mantleTargetPos.y, mantleTargetPos.z);
-                          player.setDeltaMovement(Vec3.directionFromRotation(0, lockedWallYaw).scale(0.15));
-                          for (Limb l : LIMBS) l.locked = false;
-                          player.playSound(SoundEvents.STONE_STEP, 0.8f, 1.0f);
-                      }
-                  }
-
-                  private static boolean hasItemInInventory(Player player, Item item) {
-                      if (player.getAbilities().instabuild) return true;
-                      for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-                          if (player.getInventory().getItem(i).is(item)) return true;
-                      }
-                      return false;
-                  }
-
-                  private static void tryUseChalkHotkey(Player player) {
-                      if (!hasItemInInventory(player, CHALK_BAG.get())) {
-                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
-                          return;
-                      }
-                      NETWORK.sendToServer(new PacketConsumeClimbItem(1));
-                      applyChalkEffectsClient(player);
-                  }
-
-                  public static void applyChalkEffectsClient(Player player) {
-                      chalkLevel = 100.0f;
-                      chalkAnimTicks = 24;
-                      stamina = Math.min(100.0f, stamina + 8.0f);
-                      player.playSound(SoundEvents.SAND_STEP, 0.8f, 1.5f);
-
-                      for (int i = 0; i < 14; i++) {
-                          Vec3 handPos = climbingActive ? LIMBS[i % 2].currentPos : player.getEyePosition().add(player.getLookAngle().scale(0.5));
-                          player.level().addParticle(
-                                  ParticleTypes.CLOUD,
-                                  handPos.x + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  handPos.y + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  handPos.z + (player.level().random.nextDouble() - 0.5) * 0.35,
-                                  0.0, 0.03, 0.0
-                          );
-                      }
-                  }
-
-                  private static void tryPlacePitonHotkey(Player player) {
-                      if (!hasItemInInventory(player, CLIMBING_PITON.get())) {
-                          player.playSound(SoundEvents.ITEM_BREAK, 0.5f, 1.5f);
-                          return;
-                      }
-                      Vec3 eye = player.getEyePosition();
-                      Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
-                      BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
-                      if (hit.getType() == HitResult.Type.BLOCK) {
-                          NETWORK.sendToServer(new PacketConsumeClimbItem(2));
-                          placePitonEffectClient(player, hit.getLocation());
-                      }
-                  }
-
-                  public static void placePitonEffectClient(Player player, Vec3 pitonPos) {
-                      PLACED_PITONS.add(pitonPos);
-                      lastPitonStrikePos = pitonPos;
-                      pitonAnimTicks = 18;
-                      player.playSound(SoundEvents.ANVIL_PLACE, 0.7f, 1.75f);
-
-                      for (int i = 0; i < 10; i++) {
-                          player.level().addParticle(
-                                  ParticleTypes.CRIT,
-                                  pitonPos.x, pitonPos.y, pitonPos.z,
-                                  (player.level().random.nextDouble() - 0.5) * 0.25,
-                                  0.12,
-                                  (player.level().random.nextDouble() - 0.5) * 0.25
-                          );
-                      }
-                  }
-
-                  // =========================================================================
-                  // 1. ТАРКОВСКИЙ БИО-СКАНЕР ТЕПЕРЬ РЕНДЕРИТСЯ ВНУТРИ МЕНЮ ИНВЕНТАРЯ (E)
-                  // =========================================================================
-                  @SubscribeEvent
-                  public static void onRenderInventoryScreen(ScreenEvent.Render.Post event) {
-                      if (event.getScreen() instanceof InventoryScreen invScreen) {
-                          Minecraft mc = Minecraft.getInstance();
-                          if (mc.player == null) return;
-                          float time = mc.player.tickCount + event.getPartialTick();
-
-                          // Располагаем панель био-сканера слева от классического окна инвентаря
-                          int guiLeft = invScreen.getGuiLeft();
-                          int guiTop = invScreen.getGuiTop();
-                          int panelX = Math.max(6, guiLeft - 76);
-                          int panelY = guiTop + 8;
-
-                          drawTarkovHealthWidget(event.getGuiGraphics(), panelX, panelY, time, false);
-                      }
-                  }
-
-                  // =========================================================================
-                  // 2. ВЕРХНИЙ RPG-КОМПАС, ВЫСОТОМЕР И ПОКАЗ ТАРКОВ-ХУДА ПО ЗАЖАТИЮ КЛАВИШИ H
-                  // =========================================================================
-                  @SubscribeEvent
-                  public static void onRenderGuiOverlay(RenderGuiOverlayEvent.Post event) {
-                      if (event.getOverlay() != VanillaGuiOverlay.HOTBAR.type()) return;
-                      Minecraft mc = Minecraft.getInstance();
-                      if (mc.player == null || mc.options.hideGui) return;
-
-                      GuiGraphics gui = event.getGuiGraphics();
-                      float time = mc.player.tickCount + event.getPartialTick();
-                      int screenW = mc.getWindow().getGuiScaledWidth();
-                      int screenH = mc.getWindow().getGuiScaledHeight();
-
-                      // Верхний RPG-компас и Высотомер
-                      drawRpgCompassAndAltimeter(gui, mc.player, screenW, time);
-
-                      // Баннер покорения вершины при установке флагштока
-                      if (summitBannerTicks > 0) {
-                          drawSummitConqueredBanner(gui, screenW, screenH, time);
-                      }
-
-                      // На основном экране Тарковский био-сканер скрыт и появляется ТОЛЬКО при удерживании клавиши H
-                      if (KEY_INSPECT_HEALTH != null && KEY_INSPECT_HEALTH.isDown()) {
-                          drawTarkovHealthWidget(gui, 12, 12, time, true);
-                      }
-                  }
-
-                  private static void drawTarkovHealthWidget(GuiGraphics gui, int posX, int posY, float time, boolean tilt3D) {
-                      PoseStack pose = gui.pose();
-                      pose.pushPose();
-                      pose.translate((float) posX, (float) posY, 200.0f);
-                      if (tilt3D) {
-                          pose.mulPose(Axis.YP.rotationDegrees(7.0f));
-                          pose.mulPose(Axis.ZP.rotationDegrees(-1.0f));
-                      }
-
-                      gui.fill(0, 0, 68, 108, 0xCC080B0E);
-                      for (int gy = 8; gy < 100; gy += 8) {
-                          gui.fill(2, gy, 66, gy + 1, 0x1A2E4052);
-                      }
-                      for (int gx = 8; gx < 64; gx += 8) {
-                          gui.fill(gx, 2, gx + 1, 104, 0x1A2E4052);
-                      }
-
-                      int frameCol = isGusting ? 0xFFFF3838 : 0xFF425466;
-                      gui.fill(0, 0, 12, 2, frameCol);
-                      gui.fill(0, 0, 2, 12, frameCol);
-                      gui.fill(56, 0, 68, 2, frameCol);
-                      gui.fill(66, 0, 68, 12, frameCol);
-                      gui.fill(0, 106, 12, 108, frameCol);
-                      gui.fill(0, 96, 2, 108, frameCol);
-                      gui.fill(56, 106, 68, 108, frameCol);
-                      gui.fill(66, 96, 68, 108, frameCol);
-
-                      drawAnatomicalHead(gui, 28, 5, headHealth, time);
-                      drawAnatomicalTorso(gui, 22, 20, 24, 18, thoraxHealth, true, time);
-                      drawAnatomicalTorso(gui, 24, 39, 20, 13, stomachHealth, false, time);
-                      drawAnatomicalArm(gui, 10, 21, false, LIMBS[1], time);
-                      drawAnatomicalArm(gui, 47, 21, true, LIMBS[0], time);
-                      drawAnatomicalLeg(gui, 22, 53, false, LIMBS[3], time);
-                      drawAnatomicalLeg(gui, 36, 53, true, LIMBS[2], time);
-
-                      int ecgY = 92;
-                      float pulseSpeed = 0.45f + (1.0f - stamina / 100.0f) * 0.65f + (bloodLoss * 0.01f);
-                      int sweepX = (int) ((time * 8.0f * pulseSpeed) % 56);
-                      for (int x = 0; x < 56; x++) {
-                          int dist = Math.abs(x - sweepX);
-                          int yOffset = 0;
-                          if (dist == 1) yOffset = -3;
-                          else if (dist == 0) yOffset = 4;
-                          else if (dist == 2) yOffset = 1;
-                          int alpha = dist < 14 ? (255 - dist * 14) : 70;
-                          int ecgCol = (alpha << 24) | (bloodLoss > 35f ? 0xFF3A3A : 0x38F296);
-                          gui.fill(6 + x, ecgY + yOffset, 7 + x, ecgY + yOffset + 1, ecgCol);
-                      }
-
-                      gui.fill(6, 98, 62, 101, 0xFF14191F);
-                      int stamW = (int) (56.0f * (stamina / 100.0f));
-                      int stamCol = stamina < 25.0f ? 0xFFE63946 : 0xFF2EC4B6;
-                      gui.fill(6, 98, 6 + stamW, 101, stamCol);
-
-                      gui.fill(6, 103, 62, 105, 0xFF14191F);
-                      int chalkW = (int) (56.0f * (chalkLevel / 100.0f));
-                      gui.fill(6, 103, 6 + chalkW, 105, 0xFFE8EEF2);
-
-                      pose.popPose();
-                  }
-
-                  private static void drawRpgCompassAndAltimeter(GuiGraphics gui, Player player, int screenW, float time) {
-                      Minecraft mc = Minecraft.getInstance();
-                      int compW = 190;
-                      int compH = 22;
-                      int cx = screenW / 2;
-                      int x0 = cx - compW / 2;
-                      int y0 = 8;
-
-                      gui.fill(x0, y0, x0 + compW, y0 + compH, 0xB0090D12);
-                      gui.renderOutline(x0, y0, compW, compH, 0xFF3B4D5E);
-                      gui.fill(x0, y0, x0 + 8, y0 + 2, 0xFF38E8FF);
-                      gui.fill(x0 + compW - 8, y0, x0 + compW, y0 + 2, 0xFF38E8FF);
-
-                      float rawYaw = Mth.wrapDegrees(player.getViewYRot(1.0f));
-                      float bearing = (rawYaw + 180.0f) % 360.0f;
-                      if (bearing < 0) bearing += 360.0f;
-
-                      for (int deg = 0; deg < 360; deg += 15) {
-                          float diff = Mth.wrapDegrees(deg - bearing);
-                          if (Math.abs(diff) <= 78.0f) {
-                              int px = cx + (int) (diff * 1.15f);
-                              boolean major = (deg % 45 == 0);
-                              gui.fill(px, y0 + (major ? 2 : 4), px + 1, y0 + (major ? 8 : 7), major ? 0xFFE2E8F0 : 0xFF64748B);
-
-                              String label = null;
-                              int col = 0xFFE2E8F0;
-                              if (deg == 0) { label = "N"; col = 0xFFFF4D4D; }
-                              else if (deg == 45) label = "NE";
-                              else if (deg == 90) { label = "E"; col = 0xFF38E8FF; }
-                              else if (deg == 135) label = "SE";
-                              else if (deg == 180) { label = "S"; col = 0xFF38E8FF; }
-                              else if (deg == 225) label = "SW";
-                              else if (deg == 270) { label = "W"; col = 0xFF38E8FF; }
-                              else if (deg == 315) label = "NW";
-
-                              if (label != null) {
-                                  gui.drawCenteredString(mc.font, label, px, y0 + 10, col);
-                              }
-                          }
-                      }
-
-                      if (!PLACED_FLAGS.isEmpty()) {
-                          Vec3 lastFlag = PLACED_FLAGS.get(PLACED_FLAGS.size() - 1);
-                          double dx = lastFlag.x - player.getX();
-                          double dz = lastFlag.z - player.getZ();
-                          float flagYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
-                          float flagBearing = (Mth.wrapDegrees(flagYaw) + 180.0f) % 360.0f;
-                          if (flagBearing < 0) flagBearing += 360.0f;
-                          float diff = Mth.wrapDegrees(flagBearing - bearing);
-                          if (Math.abs(diff) <= 82.0f) {
-                              int fx = cx + (int) (diff * 1.15f);
-                              gui.fill(fx - 2, y0 + 2, fx + 2, y0 + 7, 0xFFFFD700);
-                          }
-                      }
-
-                      gui.fill(cx - 2, y0, cx + 3, y0 + 3, 0xFFFFB703);
-                      gui.fill(cx, y0 + 3, cx + 1, y0 + 6, 0xFFFFB703);
-
-                      int altX = x0 + compW + 6;
-                      int altW = 98;
-                      gui.fill(altX, y0, altX + altW, y0 + compH, 0xB0090D12);
-                      gui.renderOutline(altX, y0, altW, compH, 0xFF3B4D5E);
-                      gui.fill(altX + altW - 6, y0, altX + altW, y0 + 2, 0xFF38F296);
-
-                      int currentAlt = (int) Math.round(player.getY());
-                      String altStr = String.format("§7ВЫС: §f%d м", currentAlt);
-                      String climbedStr = String.format("§7ВВЕРХ: §a+%.1f м", totalVerticalMetersClimbed);
-
-                      gui.drawString(mc.font, altStr, altX + 5, y0 + 3, 0xFFFFFF, true);
-                      gui.drawString(mc.font, climbedStr, altX + 5, y0 + 12, 0xFFFFFF, true);
-                  }
-
-                  private static void drawSummitConqueredBanner(GuiGraphics gui, int screenW, int screenH, float time) {
-                      Minecraft mc = Minecraft.getInstance();
-                      int bw = 260;
-                      int bh = 54;
-                      int bx = screenW / 2 - bw / 2;
-                      int by = 42;
-
-                      gui.fill(bx, by, bx + bw, by + bh, 0xD80B131E);
-                      gui.renderOutline(bx, by, bw, bh, 0xFFFFB703);
-                      gui.renderOutline(bx + 2, by + 2, bw - 4, bh - 4, 0x80FFD166);
-
-                      gui.drawCenteredString(mc.font, "§6§l★ ВЕРШИНА ПОКОРЕНА! ★", screenW / 2, by + 9, 0xFFFFFF);
-                      gui.drawCenteredString(mc.font, String.format("§fФлаг установлен на высоте §e%.0f м", summitConqueredAltitude), screenW / 2, by + 23, 0xFFFFFF);
-                      gui.drawCenteredString(mc.font, String.format("§7Преодолено по вертикали: §a+%.1f м", summitConqueredClimbed), screenW / 2, by + 36, 0xFFFFFF);
-                  }
-
-                  private static int getTarkovFillColor(float health, boolean fractured) {
-                      if (fractured && health < 20.0f) return 0xD80A0A0D;
-                      float ratio = Mth.clamp(health / 100.0f, 0.0f, 1.0f);
-                      int r = (int) (ratio < 0.5f ? 225 : Mth.lerp((ratio - 0.5f) * 2.0f, 225, 46));
-                      int g = (int) (ratio > 0.5f ? 196 : Mth.lerp(ratio * 2.0f, 38, 196));
-                      int b = (int) (ratio > 0.5f ? 85 : 42);
-                      return (0xB5 << 24) | (r << 16) | (g << 8) | b;
-                  }
-
-                  private static int getTarkovBorderColor(float health, boolean bleeding, boolean fractured, float time) {
-                      if (bleeding && ((int)(time * 0.25f) % 2 == 0)) return 0xFFFF1E1E;
-                      if (fractured && health < 20.0f) return 0xFFB81D1D;
-                      float ratio = Mth.clamp(health / 100.0f, 0.0f, 1.0f);
-                      int r = (int) (ratio < 0.5f ? 255 : Mth.lerp((ratio - 0.5f) * 2.0f, 250, 80));
-                      int g = (int) (ratio > 0.5f ? 235 : Mth.lerp(ratio * 2.0f, 65, 235));
-                      int b = 105;
-                      return (0xFF << 24) | (r << 16) | (g << 8) | b;
-                  }
-
-                  private static void drawAnatomicalHead(GuiGraphics gui, int x, int y, float health, float time) {
-                      int fill = getTarkovFillColor(health, false);
-                      int brd = getTarkovBorderColor(health, false, false, time);
-                      gui.fill(x + 2, y, x + 10, y + 2, fill);
-                      gui.fill(x + 1, y + 2, x + 11, y + 8, fill);
-                      gui.fill(x + 2, y + 8, x + 10, y + 11, fill);
-                      gui.fill(x + 4, y + 11, x + 8, y + 14, fill);
-                      gui.renderOutline(x + 1, y, 10, 11, brd);
-                  }
-
-                  private static void drawAnatomicalTorso(GuiGraphics gui, int x, int y, int w, int h, float health, boolean isChest, float time) {
-                      int fill = getTarkovFillColor(health, false);
-                      int brd = getTarkovBorderColor(health, false, false, time);
-                      if (isChest) {
-                          gui.fill(x, y + 2, x + w, y + h - 2, fill);
-                          gui.fill(x + 2, y, x + w - 2, y + 2, fill);
-                          gui.fill(x + 2, y + h - 2, x + w - 2, y + h, fill);
-                          gui.fill(x + w / 2, y + 2, x + w / 2 + 1, y + h - 2, 0x45000000);
-                          gui.fill(x + 3, y + 8, x + w - 3, y + 9, 0x45000000);
-                      } else {
-                          gui.fill(x + 1, y, x + w - 1, y + h - 2, fill);
-                          gui.fill(x + 3, y + h - 2, x + w - 3, y + h, fill);
-                      }
-                      gui.renderOutline(x + 1, y, w - 2, h, brd);
-                  }
-
-                  private static void drawAnatomicalArm(GuiGraphics gui, int x, int y, boolean isRightSideOnHud, Limb limb, float time) {
-                      boolean boneDmg = limb.fractured || limb.dislocated;
-                      int fill = getTarkovFillColor(limb.health, boneDmg);
-                      int brd = getTarkovBorderColor(limb.health, limb.bleeding, boneDmg, time);
-
-                      gui.fill(x + 1, y, x + 10, y + 12, fill);
-                      gui.renderOutline(x + 1, y, 9, 12, brd);
-                      gui.fill(x + 2, y + 13, x + 9, y + 24, fill);
-                      gui.renderOutline(x + 2, y + 13, 7, 11, brd);
-                      int gripCol = (limb.locked && climbingActive) ? 0xFF38F2FF : fill;
-                      gui.fill(x + 1, y + 25, x + 10, y + 30, gripCol);
-                      gui.renderOutline(x + 1, y + 25, 9, 5, brd);
-
-                      drawInjuryIconsOnPart(gui, x + 5, y + 14, limb.bleeding, boneDmg);
-                  }
-
-                  private static void drawAnatomicalLeg(GuiGraphics gui, int x, int y, boolean isRightSideOnHud, Limb limb, float time) {
-                      boolean boneDmg = limb.fractured || limb.dislocated;
-                      int fill = getTarkovFillColor(limb.health, boneDmg);
-                      int brd = getTarkovBorderColor(limb.health, limb.bleeding, boneDmg, time);
-
-                      gui.fill(x, y, x + 10, y + 14, fill);
-                      gui.renderOutline(x, y, 10, 14, brd);
-                      gui.fill(x + 1, y + 15, x + 9, y + 27, fill);
-                      gui.renderOutline(x + 1, y + 15, 8, 12, brd);
-                      int bootX = isRightSideOnHud ? x + 1 : x - 2;
-                      int gripCol = (limb.locked && climbingActive) ? 0xFF38F2FF : fill;
-                      gui.fill(bootX, y + 28, bootX + 11, y + 33, gripCol);
-                      gui.renderOutline(bootX, y + 28, 11, 5, brd);
-
-                      drawInjuryIconsOnPart(gui, x + 5, y + 14, limb.bleeding, boneDmg);
-                  }
-
-                  private static void drawInjuryIconsOnPart(GuiGraphics gui, int cx, int cy, boolean bleeding, boolean boneDmg) {
-                      if (bleeding) {
-                          gui.fill(cx - 1, cy - 4, cx + 1, cy - 2, 0xFFFF1111);
-                          gui.fill(cx - 2, cy - 2, cx + 2, cy + 2, 0xFFFF1111);
-                          gui.fill(cx - 1, cy + 2, cx + 1, cy + 3, 0xFF990000);
-                      }
-                      if (boneDmg) {
-                          gui.fill(cx - 3, cy - 3, cx, cy - 1, 0xFFFFFFFF);
-                          gui.fill(cx - 1, cy - 1, cx + 2, cy + 1, 0xFFDADADA);
-                          gui.fill(cx, cy + 1, cx + 3, cy + 3, 0xFFFFFFFF);
-                      }
-                  }
-
-                  private static void updateMedicalAndInjuries(Player player) {
-                      double vy = player.getDeltaMovement().y;
-
-                      if (player.onGround() && !climbingActive && !mantlingActive) {
-                          if (prevFallSpeed < -0.68) {
-                              double impact = Math.abs(prevFallSpeed);
-                              inflictFallImpactInjuries(player, impact);
-                          }
-                          if (!PLACED_PITONS.isEmpty()) {
-                              PLACED_PITONS.clear();
-                              hangingOnRope = false;
-                          }
-                      }
-
-                      if (!climbingActive && !mantlingActive && player.horizontalCollision && player.getDeltaMovement().horizontalDistance() > 0.38) {
-                          Limb randomSideLimb = LIMBS[player.level().random.nextInt(4)];
-                          randomSideLimb.health = Math.max(15.0f, randomSideLimb.health - 28.0f);
-                          randomSideLimb.bleeding = true;
-                          if (randomSideLimb.health < 25.0f) randomSideLimb.fractured = true;
-                          thoraxHealth = Math.max(30.0f, thoraxHealth - 15.0f);
-                          spawnBloodParticles(player, randomSideLimb.currentPos.equals(Vec3.ZERO) ? player.position().add(0, 1, 0) : randomSideLimb.currentPos, 12);
-                          player.playSound(SoundEvents.PLAYER_HURT, 0.9f, 0.8f);
-                      }
-
-                      prevFallSpeed = vy;
-
-                      int bleedingCount = 0;
-                      for (Limb limb : LIMBS) {
-                          if (limb.bleeding) {
-                              bleedingCount++;
-                              limb.health = Math.max(5.0f, limb.health - 0.035f);
-                              if (player.tickCount % 8 == 0) {
-                                  Vec3 bleedPos = climbingActive ? limb.currentPos : getJointRoot(player, limb, 1.0f);
-                                  spawnBloodParticles(player, bleedPos, 3);
-                              }
-                          } else if (limb.health < 100.0f && !limb.fractured && !limb.dislocated) {
-                              limb.health = Math.min(100.0f, limb.health + 0.015f);
-                          }
-                      }
-
-                      if (bleedingCount > 0) {
-                          bloodLoss = Math.min(100.0f, bloodLoss + bleedingCount * 0.045f);
-                          thoraxHealth = Math.max(20.0f, thoraxHealth - bleedingCount * 0.01f);
-                          if (player.tickCount % 80 == 0) {
-                              player.hurt(player.damageSources().generic(), 1.0f);
-                          }
-                      } else {
-                          bloodLoss = Math.max(0.0f, bloodLoss - 0.06f);
-                          thoraxHealth = Math.min(100.0f, thoraxHealth + 0.02f);
-                          headHealth = Math.min(100.0f, headHealth + 0.02f);
-                          stomachHealth = Math.min(100.0f, stomachHealth + 0.02f);
-                      }
-
-                      if (player.onGround() && !climbingActive && !mantlingActive) {
-                          float legPenalty = 1.0f;
-                          if (LIMBS[2].fractured || LIMBS[2].dislocated) legPenalty -= 0.35f;
-                          if (LIMBS[3].fractured || LIMBS[3].dislocated) legPenalty -= 0.35f;
-                          if (legPenalty < 1.0f) {
-                              Vec3 m = player.getDeltaMovement();
-                              player.setDeltaMovement(m.x * legPenalty, m.y, m.z * legPenalty);
-                          }
-                      }
-
-                      if (bloodLoss > 60.0f && player.tickCount % 60 == 0) {
-                          player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 100, 0, false, false));
-                      }
-                  }
-
-                  private static void inflictLimbRipInjury(Player player, Limb limb) {
-                      limb.health = Math.max(12.0f, limb.health - 22.0f);
-                      limb.bleeding = true;
-                      if (limb.health <= 20.0f) limb.fractured = true;
-                      spawnBloodParticles(player, limb.currentPos, 10);
-                      player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 1.1f);
-                  }
-
-                  private static void inflictSkinAbrasion(Player player, Limb limb) {
-                      limb.health = Math.max(20.0f, limb.health - 15.0f);
-                      limb.bleeding = true;
-                      spawnBloodParticles(player, limb.currentPos, 8);
-                      player.playSound(SoundEvents.PLAYER_HURT, 0.65f, 1.25f);
-                  }
-
-                  private static void inflictFallImpactInjuries(Player player, double impactSpeed) {
-                      float dmg = (float) ((impactSpeed - 0.62) * 90.0);
-                      if (dmg <= 8.0f) return;
-
-                      LIMBS[2].health = Math.max(0.0f, LIMBS[2].health - dmg);
-                      LIMBS[3].health = Math.max(0.0f, LIMBS[3].health - dmg * 0.9f);
-                      stomachHealth = Math.max(25.0f, stomachHealth - dmg * 0.4f);
-
-                      if (LIMBS[2].health < 25.0f) {
-                          LIMBS[2].fractured = true;
-                          LIMBS[2].bleeding = true;
-                      } else if (LIMBS[2].health < 55.0f) {
-                          LIMBS[2].dislocated = true;
-                      }
-
-                      if (LIMBS[3].health < 25.0f) {
-                          LIMBS[3].fractured = true;
-                          LIMBS[3].bleeding = true;
-                      } else if (LIMBS[3].health < 55.0f) {
-                          LIMBS[3].dislocated = true;
-                      }
-
-                      spawnBloodParticles(player, player.position().add(0, 0.3, 0), 18);
-                      player.playSound(SoundEvents.SKELETON_HURT, 1.0f, 0.55f);
-                      player.playSound(SoundEvents.PLAYER_BIG_FALL, 1.0f, 0.8f);
-                  }
-
-                  private static void spawnBloodParticles(Player player, Vec3 pos, int count) {
-                      BlockParticleOption bloodParticle = new BlockParticleOption(ParticleTypes.BLOCK, Blocks.REDSTONE_BLOCK.defaultBlockState());
-                      for (int i = 0; i < count; i++) {
-                          player.level().addParticle(
-                                  bloodParticle,
-                                  pos.x + (player.level().random.nextDouble() - 0.5) * 0.25,
-                                  pos.y + (player.level().random.nextDouble() - 0.5) * 0.25,
-                                  pos.z + (player.level().random.nextDouble() - 0.5) * 0.25,
-                                  0.0, -0.08, 0.0
-                          );
-                      }
-                  }
-
-                  private static void updateRopeArrestPhysics(Player player) {
-                      if (PLACED_PITONS.isEmpty()) return;
-
-                      Vec3 lastAnchor = PLACED_PITONS.get(PLACED_PITONS.size() - 1);
-                      Vec3 waistPos = player.position().add(0, 0.85, 0);
-                      double dist = waistPos.distanceTo(lastAnchor);
-
-                      if (dist > maxRopeSlack) {
-                          if (!hangingOnRope) {
-                              hangingOnRope = true;
-                              fallFlailTicks = 0;
-                              player.playSound(SoundEvents.LEASH_KNOT_PLACE, 1.0f, 0.8f);
-
-                              if (player.getDeltaMovement().y < -0.95) {
-                                  LIMBS[2].dislocated = true;
-                                  LIMBS[2].health = Math.max(30.0f, LIMBS[2].health - 20.0f);
-                                  stomachHealth = Math.max(40.0f, stomachHealth - 20.0f);
-                                  player.playSound(SoundEvents.PLAYER_HURT, 0.8f, 0.9f);
-                              }
-                          }
-
-                          Vec3 pullDir = lastAnchor.subtract(waistPos).normalize();
-                          double stretch = dist - maxRopeSlack;
-                          Vec3 currentVel = player.getDeltaMovement();
-
-                          double climbRopeBoost = Minecraft.getInstance().options.keyJump.isDown() ? 0.14 : 0.0;
-
-                          Vec3 springForce = pullDir.scale(Math.min(stretch * 0.38, 0.75));
-                          Vec3 dampedVel = currentVel.scale(0.65).add(springForce).add(0, climbRopeBoost, 0);
-
-                          player.setDeltaMovement(dampedVel);
-                          player.fallDistance = 0.0f;
-                      } else {
-                          hangingOnRope = false;
-                      }
-                  }
-
-                  private static void updateAtmosphereAndWind(Player player) {
-                      Level level = player.level();
-                      double y = player.getY();
-
-                      double altAboveSea = Math.max(0.0, y - 64.0);
-                      pressureKPa = (float) Mth.clamp(101.3 * Math.exp(-altAboveSea / 260.0), 38.0, 101.3);
-                      hypoxiaFactor = (float) Mth.clamp((y - 85.0) / 190.0, 0.0, 1.0);
-                      if (hypoxiaFactor > 0.7f) headHealth = Math.max(45.0f, headHealth - 0.01f);
-
-                      BlockPos eyePos = BlockPos.containing(player.getEyePosition());
-                      int skyLight = level.getBrightness(LightLayer.SKY, eyePos);
-                      float exposure = skyLight / 15.0f;
-
-                      if (exposure <= 0.1f) {
-                          windSpeed = Mth.lerp(0.05f, windSpeed, 0.5f);
-                          currentWind = Vec3.ZERO;
-                          isGusting = false;
-                          return;
-                      }
-
-                      float weatherMult = level.isThundering() ? 2.1f : (level.isRaining() ? 1.45f : 1.0f);
-
-                      if (gustTimer > 0) {
-                          gustTimer--;
-                          isGusting = true;
-                      } else {
-                          isGusting = false;
-                          float gustChance = (0.003f + hypoxiaFactor * 0.012f) * weatherMult;
-                          if (level.random.nextFloat() < gustChance) {
-                              gustTimer = 60 + level.random.nextInt(50);
-                              isGusting = true;
-                          }
-                      }
-
-                      float baseWind = (2.5f + (float)(altAboveSea * 0.085f)) * exposure * weatherMult;
-                      float targetWindSpeed = isGusting ? baseWind * 2.15f + 5.5f : baseWind;
-                      windSpeed = Mth.lerp(0.04f, windSpeed, Mth.clamp(targetWindSpeed, 0.0f, 32.0f));
-
-                      double angle = (level.getGameTime() * 0.007) + Math.sin(level.getGameTime() * 0.03) * 0.8;
-                      double wx = Math.cos(angle);
-                      double wz = Math.sin(angle);
-                      double wy = Math.sin(level.getGameTime() * 0.05) * 0.25;
-
-                      double forceScale = (windSpeed / 25.0) * 0.35;
-                      currentWind = new Vec3(wx * forceScale, wy * forceScale, wz * forceScale);
                   }
 
                   private static void handleLimbInput(Player player, int index, KeyMapping key) {
                       Limb limb = LIMBS[index];
                       if (key.isDown()) {
-                          if (limb.fractured || limb.health < 20.0f) return;
-
-                          limb.reaching = true;
                           Vec3 eye = player.getEyePosition();
-                          double maxReachRay = (2.1 - (hypoxiaFactor * 0.35)) * (0.6 + 0.4 * limb.getEffectiveness());
-                          Vec3 reach = eye.add(player.getLookAngle().scale(maxReachRay));
+                          Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
                           BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
                           if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
+                              if (limb.isHand) {
+                                  ItemStack mainItem = player.getMainHandItem();
+                                  ItemStack offItem = player.getOffhandItem();
+                                  if (mainItem.getItem() instanceof IceAxeItem || offItem.getItem() instanceof IceAxeItem) {
+                                      if (!IceAxeItem.canGripSurface(player.level(), hit.getBlockPos())) {
+                                          return;
+                                      }
+                                  }
+                              }
                               Vec3 gripPoint = hit.getLocation();
-                              Vec3 root = getJointRoot(player, limb, 1.0f);
-                              double allowedDist = (1.55 - (hypoxiaFactor * 0.2)) * (0.65 + 0.35 * limb.getEffectiveness());
-                              if (root.distanceTo(gripPoint) <= allowedDist && limb.targetPos.distanceTo(gripPoint) > 0.06) {
-                                  limb.startPos = limb.currentPos;
+                              Vec3 root = getJointRoot(player, limb);
+                              if (root.distanceTo(gripPoint) <= 1.55) {
                                   limb.targetPos = gripPoint;
-                                  limb.moveProgress = 0.0f;
                                   BlockState state = player.level().getBlockState(hit.getBlockPos());
                                   limb.gripQuality = state.getBlock().getFriction();
                                   limb.locked = true;
                               }
                           }
-                      } else {
-                          limb.reaching = false;
                       }
                   }
 
                   private static boolean tryEngageWall(Player player) {
-                      if (LIMBS[0].fractured && LIMBS[1].fractured) return false;
-
                       Vec3 eye = player.getEyePosition();
                       Vec3 forward = Vec3.directionFromRotation(0, player.getYRot());
                       BlockHitResult hit = player.level().clip(new ClipContext(eye, eye.add(forward.scale(1.4)), ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
                       if (hit.getType() != HitResult.Type.BLOCK) return false;
-
-                      Direction face = hit.getDirection();
-                      if (face.getAxis().isHorizontal()) {
-                          lockedWallYaw = face.getOpposite().toYRot();
-                      } else {
-                          lockedWallYaw = player.getYRot();
-                      }
-
                       Vec3 wallHit = hit.getLocation();
-                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
-                      Vec3 right = wallForward.cross(new Vec3(0, 1, 0)).normalize();
-
-                      LIMBS[0].prevPos = LIMBS[0].startPos = LIMBS[0].targetPos = LIMBS[0].currentPos = wallHit.add(right.scale(-0.35)).add(0, 0.25, 0);
-                      LIMBS[1].prevPos = LIMBS[1].startPos = LIMBS[1].targetPos = LIMBS[1].currentPos = wallHit.add(right.scale(0.35)).add(0, 0.25, 0);
-                      LIMBS[2].prevPos = LIMBS[2].startPos = LIMBS[2].targetPos = LIMBS[2].currentPos = wallHit.add(right.scale(-0.25)).add(0, -0.75, 0);
-                      LIMBS[3].prevPos = LIMBS[3].startPos = LIMBS[3].targetPos = LIMBS[3].currentPos = wallHit.add(right.scale(0.25)).add(0, -0.75, 0);
-
-                      for (Limb limb : LIMBS) {
-                          limb.locked = !limb.fractured && limb.health >= 20.0f;
-                          limb.moveProgress = 1.0f;
-                      }
+                      Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
+                      LIMBS[0].targetPos = LIMBS[0].currentPos = wallHit.add(right.scale(-0.35)).add(0, 0.25, 0);
+                      LIMBS[1].targetPos = LIMBS[1].currentPos = wallHit.add(right.scale(0.35)).add(0, 0.25, 0);
+                      LIMBS[2].targetPos = LIMBS[2].currentPos = wallHit.add(right.scale(-0.25)).add(0, -0.75, 0);
+                      LIMBS[3].targetPos = LIMBS[3].currentPos = wallHit.add(right.scale(0.25)).add(0, -0.75, 0);
+                      for (Limb limb : LIMBS) limb.locked = true;
                       return true;
                   }
 
-                  private static void disengageClimb(Player player, boolean isFall) {
+                  private static void disengageClimb(Player player, String reason) {
                       climbingActive = false;
-                      if (isFall) {
-                          fallFlailTicks = 45;
-                          player.playSound(SoundEvents.PLAYER_ATTACK_SWEEP, 0.8f, 0.6f);
-                      }
                       for (Limb limb : LIMBS) limb.locked = false;
+                      player.displayClientMessage(Component.literal(reason), true);
                   }
 
-                  private static Vec3 getJointRoot(Player player, Limb limb, float partialTick) {
-                      Vec3 forward = Vec3.directionFromRotation(0, (climbingActive || mantlingActive) ? lockedWallYaw : player.getViewYRot(partialTick));
+                  private static Vec3 getJointRoot(Player player, Limb limb) {
+                      Vec3 forward = Vec3.directionFromRotation(0, player.getYRot());
                       Vec3 right = forward.cross(new Vec3(0, 1, 0)).normalize();
                       double sideOffset = limb.isLeft ? -0.28 : 0.28;
                       double heightOffset = limb.isHand ? 1.32 : 0.72;
-                      return player.getPosition(partialTick).add(right.scale(sideOffset)).add(0, heightOffset, 0);
+                      return player.position().add(right.scale(sideOffset)).add(0, heightOffset, 0);
                   }
 
                   private static Vec3 solveTwoBoneIK(Vec3 root, Vec3 target, boolean isHand, boolean isLeft) {
@@ -2016,594 +332,109 @@ jobs:
                       Vec3 diff = target.subtract(root);
                       double dist = Mth.clamp(diff.length(), 0.1, boneLen * 1.98);
                       Vec3 midPoint = root.add(diff.scale(0.5));
-
                       double bendAmount = Math.sqrt(Math.max(0.0, boneLen * boneLen - (dist * 0.5) * (dist * 0.5)));
-                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
-                      Vec3 right = wallForward.cross(new Vec3(0, 1, 0)).normalize();
-
-                      Vec3 bendDir = right.scale(isLeft ? -0.55 : 0.55)
-                              .add(0, isHand ? -0.75 : 0.25, 0)
-                              .subtract(wallForward.scale(0.45))
-                              .normalize();
+                      Vec3 bendDir = new Vec3(isLeft ? -0.35 : 0.35, isHand ? -0.85 : 0.4, 0.35).normalize();
                       return midPoint.add(bendDir.scale(bendAmount));
                   }
 
                   @SubscribeEvent
-                  public static void onRenderHandFirstPerson(RenderHandEvent event) {
-                      Minecraft mc = Minecraft.getInstance();
-                      AbstractClientPlayer player = mc.player;
-                      if (player == null) return;
-
-                      if (!climbingActive && !mantlingActive && !hangingOnRope && fallFlailTicks <= 0 && bandageAnimTicks <= 0) return;
-
-                      event.setCanceled(true);
-                      if (event.getHand() != InteractionHand.MAIN_HAND) return;
-
-                      PoseStack poseStack = event.getPoseStack();
-                      MultiBufferSource buffer = event.getMultiBufferSource();
-                      int light = event.getPackedLight();
-                      float pt = event.getPartialTick();
-                      float time = player.tickCount + pt;
-
-                      PlayerRenderer playerRenderer = (PlayerRenderer) mc.getEntityRenderDispatcher().getRenderer(player);
-
-                      renderWorldBoundFirstPersonArm(poseStack, buffer, light, player, playerRenderer, true, pt, time);
-                      renderWorldBoundFirstPersonArm(poseStack, buffer, light, player, playerRenderer, false, pt, time);
-                  }
-
-                  private static void renderWorldBoundFirstPersonArm(PoseStack poseStack, MultiBufferSource buffer, int light,
-                                                                     AbstractClientPlayer player, PlayerRenderer renderer,
-                                                                     boolean isLeft, float pt, float time) {
-                      float side = isLeft ? -1.0f : 1.0f;
-                      Limb handLimb = isLeft ? LIMBS[0] : LIMBS[1];
-
-                      if (bandageAnimTicks > 0 || chalkAnimTicks > 0 || (!climbingActive && !mantlingActive && (fallFlailTicks > 0 || hangingOnRope))) {
-                          poseStack.pushPose();
-                          double x = side * 0.35, y = -0.32, z = -0.50;
-                          float pitch = -65.0f, yaw = side * 15.0f, roll = side * -12.0f;
-
-                          if (bandageAnimTicks > 0) {
-                              double wrapCircle = Math.sin(time * 1.4) * 0.12;
-                              x = side * 0.14 + (isLeft ? 0.0 : wrapCircle);
-                              y = -0.34 + (isLeft ? 0.0 : Math.cos(time * 1.4) * 0.10);
-                              z = -0.46;
-                              pitch = -45.0f;
-                              yaw = side * -30.0f;
-                          } else if (chalkAnimTicks > 0) {
-                              x = side * (0.10 + Math.sin(time * 1.8) * 0.06);
-                              y = -0.38 + Math.cos(time * 2.2) * 0.04;
-                              z = -0.45;
-                              pitch = -35.0f;
-                              yaw = side * -35.0f;
-                          } else if (fallFlailTicks > 0) {
-                              y = -0.25 + Math.sin(time * 1.4 + side) * 0.22;
-                              x = side * (0.42 + Math.cos(time * 1.1) * 0.12);
-                              pitch = -95.0f + (float) Math.sin(time * 1.6 + side) * 35.0f;
-                          } else if (hangingOnRope) {
-                              double climbOffset = Minecraft.getInstance().options.keyJump.isDown() ? Math.sin(time * 0.9 + (isLeft ? 0 : Math.PI)) * 0.14 : 0.0;
-                              x = side * 0.12;
-                              y = -0.22 + climbOffset;
-                              z = -0.42;
-                              pitch = -80.0f;
-                              yaw = side * -20.0f;
-                          }
-
-                          poseStack.translate(x, y, z);
-                          poseStack.mulPose(Axis.XP.rotationDegrees(pitch));
-                          poseStack.mulPose(Axis.YP.rotationDegrees(yaw));
-                          poseStack.mulPose(Axis.ZP.rotationDegrees(roll));
-                          if (isLeft) renderer.renderLeftHand(poseStack, buffer, light, player);
-                          else renderer.renderRightHand(poseStack, buffer, light, player);
-                          poseStack.popPose();
-                          return;
-                      }
-
-                      Vec3 eyePos = player.getEyePosition(pt);
-                      Vec3 shoulderWorld = getJointRoot(player, handLimb, pt);
-                      Vec3 handWorld = mantlingActive ? (isLeft ? mantleLeftHandPos : mantleRightHandPos) : handLimb.getRenderPos(pt);
-
-                      if (pitonAnimTicks > 0 && !isLeft && !lastPitonStrikePos.equals(Vec3.ZERO)) {
-                          double strikeWave = Math.sin(pitonAnimTicks * 0.9);
-                          handWorld = lastPitonStrikePos.add(player.getLookAngle().scale(-Math.max(0, strikeWave) * 0.25));
-                      }
-
-                      if (stamina < 40f || hypoxiaFactor > 0.4f || isGusting || handLimb.bleeding || handLimb.dislocated) {
-                          double amp = (handLimb.bleeding || handLimb.dislocated) ? 0.022 : 0.010;
-                          handWorld = handWorld.add(
-                                  Math.sin(time * 2.3 + side) * amp,
-                                  Math.cos(time * 2.7 + side) * amp,
-                                  Math.sin(time * 1.9) * amp
-                          );
-                      }
-
-                      Vec3 armOriginWorld = shoulderWorld.lerp(handWorld, 0.58);
-                      Vec3 relToEye = armOriginWorld.subtract(eyePos);
-
-                      Vec3 armDirWorld = handWorld.subtract(shoulderWorld);
-                      if (armDirWorld.lengthSqr() < 0.001) armDirWorld = new Vec3(0, 1, 0);
-                      armDirWorld = armDirWorld.normalize();
-
-                      float armYawWorld = (float) (Mth.atan2(armDirWorld.x, armDirWorld.z) * (180.0 / Math.PI));
-                      float armPitchWorld = (float) (Math.asin(Mth.clamp(armDirWorld.y, -1.0, 1.0)) * (180.0 / Math.PI));
-
-                      float camYaw = player.getViewYRot(pt);
-                      float camPitch = player.getViewXRot(pt);
-
-                      poseStack.pushPose();
-                      poseStack.mulPose(Axis.XP.rotationDegrees(camPitch));
-                      poseStack.mulPose(Axis.YP.rotationDegrees(camYaw + 180.0f));
-                      poseStack.translate(relToEye.x, relToEye.y, relToEye.z);
-                      poseStack.mulPose(Axis.YP.rotationDegrees(-armYawWorld));
-                      poseStack.mulPose(Axis.XP.rotationDegrees(armPitchWorld - 90.0f));
-
-                      float twistRoll = handLimb.dislocated ? side * 32.0f : side * -10.0f;
-                      poseStack.mulPose(Axis.ZP.rotationDegrees(twistRoll));
-                      poseStack.scale(0.85f, 1.15f, 0.85f);
-
-                      if (isLeft) renderer.renderLeftHand(poseStack, buffer, light, player);
-                      else renderer.renderRightHand(poseStack, buffer, light, player);
-                      poseStack.popPose();
-                  }
-
-                  @SubscribeEvent
-                  public static void onRenderPlayerPost(RenderPlayerEvent.Post event) {
-                      Player player = event.getEntity();
-                      if (player != Minecraft.getInstance().player) return;
-                      if (!climbingActive && !mantlingActive && !hangingOnRope && fallFlailTicks <= 0 && chalkAnimTicks <= 0 && pitonAnimTicks <= 0 && bandageAnimTicks <= 0) return;
-                      player.walkAnimation.setSpeed(0.0f);
-                  }
-
-                  @SubscribeEvent
-                  public static void onRenderPlayerPre(RenderPlayerEvent.Pre event) {
-                      Player player = event.getEntity();
-                      if (player != Minecraft.getInstance().player) return;
-
+                  public static void onRenderPlayerPost(RenderPlayerEvent.Pre event) {
+                      if (!climbingActive || event.getEntity() != Minecraft.getInstance().player) return;
                       PlayerModel<AbstractClientPlayer> model = event.getRenderer().getModel();
-                      float pt = event.getPartialTick();
-                      float time = player.tickCount + pt;
-
-                      if (mantlingActive) {
-                          player.walkAnimation.setSpeed(0.0f);
-                          player.yBodyRot = lockedWallYaw;
-                          player.yBodyRotO = lockedWallYaw;
-                          float progress = (mantleTicks + pt) / MAX_MANTLE_TICKS;
-
-                          model.body.xRot = (float) Math.sin(progress * Math.PI) * 0.65f;
-                          model.leftArm.xRot = -1.8f + progress * 1.9f;
-                          model.leftArm.zRot = -0.25f;
-                          model.rightArm.xRot = -1.8f + progress * 1.9f;
-                          model.rightArm.zRot = 0.25f;
-
-                          model.leftLeg.xRot = -1.1f * (float) Math.sin(progress * Math.PI);
-                          model.rightLeg.xRot = -0.8f * (float) Math.sin(progress * Math.PI);
-                          syncModelLayers(model);
-                          return;
-                      }
-
-                      if (bandageAnimTicks > 0 && !climbingActive) {
-                          model.body.xRot = 0.25f;
-                          model.leftArm.xRot = -1.1f;
-                          model.leftArm.yRot = 0.45f;
-                          model.rightArm.xRot = -1.1f + Mth.sin(time * 1.5f) * 0.35f;
-                          model.rightArm.yRot = -0.55f + Mth.cos(time * 1.5f) * 0.25f;
-                          syncModelLayers(model);
-                          return;
-                      }
-
-                      if (!climbingActive && !hangingOnRope && fallFlailTicks <= 0) {
-                          if (LIMBS[0].fractured) {
-                              model.leftArm.xRot = 0.15f;
-                              model.leftArm.zRot = -0.28f;
-                          }
-                          if (LIMBS[1].fractured) {
-                              model.rightArm.xRot = 0.15f;
-                              model.rightArm.zRot = 0.28f;
-                          }
-                          if (LIMBS[2].fractured || LIMBS[3].fractured) {
-                              model.body.zRot = Mth.sin(time * 0.3f) * 0.15f;
-                          }
-                          syncModelLayers(model);
-                          return;
-                      }
-
-                      player.walkAnimation.setSpeed(0.0f);
-
-                      if (fallFlailTicks > 0 && !climbingActive && !hangingOnRope) {
-                          model.body.xRot = 0.35f;
-                          model.leftArm.xRot = -2.4f + Mth.sin(time * 1.5f) * 0.75f;
-                          model.leftArm.zRot = -0.6f + Mth.cos(time * 1.2f) * 0.35f;
-                          model.rightArm.xRot = -2.4f - Mth.sin(time * 1.5f) * 0.75f;
-                          model.rightArm.zRot = 0.6f - Mth.cos(time * 1.2f) * 0.35f;
-
-                          model.leftLeg.xRot = Mth.sin(time * 1.4f) * 0.65f;
-                          model.rightLeg.xRot = -Mth.sin(time * 1.4f) * 0.65f;
-                          syncModelLayers(model);
-                          return;
-                      }
-
-                      if (hangingOnRope && !climbingActive) {
-                          boolean pulling = Minecraft.getInstance().options.keyJump.isDown();
-                          float pullCycle = pulling ? Mth.sin(time * 0.7f) * 0.45f : 0.0f;
-
-                          model.body.xRot = 0.18f;
-                          model.body.zRot = Mth.sin(time * 0.15f) * 0.08f;
-
-                          model.leftArm.xRot = -2.35f + pullCycle;
-                          model.leftArm.yRot = 0.35f;
-                          model.rightArm.xRot = -2.35f - pullCycle;
-                          model.rightArm.yRot = -0.35f;
-
-                          model.leftLeg.xRot = -0.35f + pullCycle * 0.3f;
-                          model.leftLeg.zRot = -0.12f;
-                          model.rightLeg.xRot = -0.25f - pullCycle * 0.3f;
-                          model.rightLeg.zRot = 0.12f;
-                          syncModelLayers(model);
-                          return;
-                      }
-
-                      if (climbingActive) {
-                          player.yBodyRot = lockedWallYaw;
-                          player.yBodyRotO = lockedWallYaw;
-
-                          float breathFreq = 0.18f + (1.0f - stamina / 100.0f) * 0.35f + hypoxiaFactor * 0.25f;
-                          float breathAmp = 0.04f + (1.0f - stamina / 100.0f) * 0.06f;
-                          float leanSide = -player.xxa * 0.22f + (float)(currentWind.x * 0.25f);
-                          float pullForward = (pullUpAnimTicks > 0) ? Mth.sin(pullUpAnimTicks * 0.3f) * 0.22f : 0.08f;
-
-                          model.body.xRot = pullForward + Mth.sin(time * breathFreq) * breathAmp;
-                          model.body.zRot = leanSide;
-                          model.body.yRot = (LIMBS[0].reaching ? -0.18f : (LIMBS[1].reaching ? 0.18f : 0.0f));
-
-                          applyLimbIKToModel(player, LIMBS[0], model.leftArm, pt, time);
-                          applyLimbIKToModel(player, LIMBS[1], model.rightArm, pt, time);
-                          applyLimbIKToModel(player, LIMBS[2], model.leftLeg, pt, time);
-                          applyLimbIKToModel(player, LIMBS[3], model.rightLeg, pt, time);
-
-                          if (bandageAnimTicks > 0) {
-                              model.leftArm.xRot = -1.05f;
-                              model.leftArm.yRot = 0.55f;
-                              model.rightArm.xRot = -1.05f + Mth.sin(time * 1.6f) * 0.35f;
-                              model.rightArm.yRot = -0.55f + Mth.cos(time * 1.6f) * 0.25f;
-                          } else if (chalkAnimTicks > 0) {
-                              model.leftArm.xRot = -0.85f + Mth.sin(time * 1.8f) * 0.25f;
-                              model.leftArm.yRot = 0.65f;
-                              model.leftArm.zRot = 0.25f;
-
-                              model.rightArm.xRot = -0.85f - Mth.sin(time * 1.8f) * 0.25f;
-                              model.rightArm.yRot = -0.65f;
-                              model.rightArm.zRot = -0.25f;
-                          } else if (pitonAnimTicks > 0) {
-                              float hammerSwing = Mth.sin(pitonAnimTicks * 0.9f);
-                              model.rightArm.xRot = -1.9f + hammerSwing * 0.95f;
-                              model.rightArm.yRot = -0.15f;
-                              model.rightArm.zRot = 0.1f;
-                          }
-
-                          syncModelLayers(model);
-                      }
+                      applyLimbRotationToModel(event.getEntity(), LIMBS[0], model.leftArm);
+                      applyLimbRotationToModel(event.getEntity(), LIMBS[1], model.rightArm);
+                      applyLimbRotationToModel(event.getEntity(), LIMBS[2], model.leftLeg);
+                      applyLimbRotationToModel(event.getEntity(), LIMBS[3], model.rightLeg);
                   }
 
-                  private static void applyLimbIKToModel(Player player, Limb limb, ModelPart part, float pt, float time) {
-                      if (limb.fractured) {
-                          part.xRot = 0.08f + Mth.sin(time * 0.2f) * 0.05f;
-                          part.zRot = limb.isLeft ? -0.22f : 0.22f;
-                          part.yRot = limb.isLeft ? 0.35f : -0.35f;
-                          return;
-                      }
-
-                      if (!limb.locked) {
-                          float balanceWave = Mth.sin(time * 0.45f + (limb.isLeft ? 0.0f : 2.0f));
-                          if (limb.isHand) {
-                              part.xRot = -1.3f + balanceWave * 0.35f;
-                              part.zRot = (limb.isLeft ? -0.75f : 0.75f) + balanceWave * 0.25f;
-                              part.yRot = 0.0f;
-                          } else {
-                              part.xRot = 0.25f + balanceWave * 0.2f;
-                              part.zRot = (limb.isLeft ? -0.25f : 0.25f);
-                              part.yRot = 0.0f;
-                          }
-                          return;
-                      }
-
-                      Vec3 root = getJointRoot(player, limb, pt);
-                      Vec3 targetDir = limb.elbowOrKneePos.lerp(limb.getRenderPos(pt), 0.65).subtract(root).normalize();
-
-                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw);
-                      Vec3 wallRight = wallForward.cross(new Vec3(0, 1, 0)).normalize();
-
-                      double localForward = targetDir.dot(wallForward);
-                      double localUp = targetDir.y;
-                      double localSide = targetDir.dot(wallRight);
-
-                      float painTremor = (stamina < 35f || hypoxiaFactor > 0.45f || limb.bleeding || limb.dislocated)
-                              ? Mth.sin(time * 2.2f + (limb.isLeft ? 0 : 1.5f)) * 0.06f : 0.0f;
-
-                      float dislocationTwist = limb.dislocated ? (limb.isLeft ? -0.35f : 0.35f) : 0.0f;
-
-                      if (limb.isHand) {
-                          part.xRot = (float) (-Math.atan2(localForward, -localUp)) + painTremor;
-                          part.zRot = (float) (localSide * 1.15) + (limb.isLeft ? -0.18f : 0.18f) + dislocationTwist;
-                          part.yRot = (float) (-localSide * 0.45);
-                      } else {
-                          double legLift = Mth.clamp((limb.getRenderPos(pt).y - player.getY()) * 1.4, -0.4, 1.3);
-                          part.xRot = (float) (-legLift * 1.15 - Math.max(0, localForward * 0.5)) + painTremor;
-                          part.zRot = (float) (localSide * 0.85) + (limb.isLeft ? -0.15f : 0.15f) + dislocationTwist;
-                          part.yRot = (float) (limb.isLeft ? -0.2f : 0.2f);
-                      }
-                  }
-
-                  private static void syncModelLayers(PlayerModel<AbstractClientPlayer> model) {
-                      model.jacket.copyFrom(model.body);
-                      model.leftSleeve.copyFrom(model.leftArm);
-                      model.rightSleeve.copyFrom(model.rightArm);
-                      model.leftPants.copyFrom(model.leftLeg);
-                      model.rightPants.copyFrom(model.rightLeg);
+                  private static void applyLimbRotationToModel(Player player, Limb limb, net.minecraft.client.model.geom.ModelPart part) {
+                      Vec3 root = getJointRoot(player, limb);
+                      Vec3 dir = limb.currentPos.subtract(root).normalize();
+                      part.xRot = (float) -Math.asin(Mth.clamp(dir.y, -1.0, 1.0)) - 1.2f;
+                      part.zRot = (float) (limb.isLeft ? -0.25f : 0.25f);
                   }
 
                   @SubscribeEvent
                   public static void onRenderWorld(RenderLevelStageEvent event) {
-                      if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
-                      if (!climbingActive && !mantlingActive && PLACED_PITONS.isEmpty() && PLACED_FLAGS.isEmpty()) return;
-
+                      if (!climbingActive || event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
                       Minecraft mc = Minecraft.getInstance();
                       Player player = mc.player;
                       if (player == null) return;
-
-                      float pt = event.getPartialTick();
-                      float time = player.tickCount + pt;
                       Vec3 cam = event.getCamera().getPosition();
                       PoseStack poseStack = event.getPoseStack();
                       MultiBufferSource.BufferSource buffer = mc.renderBuffers().bufferSource();
                       VertexConsumer builder = buffer.getBuffer(RenderType.lines());
-
                       poseStack.pushPose();
                       poseStack.translate(-cam.x, -cam.y, -cam.z);
-
-                      Vec3 wallForward = Vec3.directionFromRotation(0, lockedWallYaw).normalize();
-                      Vec3 n = wallForward.scale(-1.0);
-                      Vec3 u = wallForward.cross(new Vec3(0, 1, 0)).normalize();
-                      Vec3 v = new Vec3(0, 1, 0);
-
-                      if (!PLACED_FLAGS.isEmpty()) {
-                          for (Vec3 flagPos : PLACED_FLAGS) {
-                              draw3DSummitFlagpole(poseStack, builder, flagPos, time);
-                          }
+                      for (Limb limb : LIMBS) {
+                          float r = limb.isHand ? 0.1f : 0.2f;
+                          float g = limb.locked ? 0.95f : 0.2f;
+                          float b = limb.isHand ? 0.95f : 0.3f;
+                          AABB grip = new AABB(limb.currentPos, limb.currentPos).inflate(0.08);
+                          LevelRenderer.renderLineBox(poseStack, builder, grip.minX, grip.minY, grip.minZ, grip.maxX, grip.maxY, grip.maxZ, r, g, b, 1.0f);
+                          AABB joint = new AABB(limb.elbowOrKneePos, limb.elbowOrKneePos).inflate(0.05);
+                          LevelRenderer.renderLineBox(poseStack, builder, joint.minX, joint.minY, joint.minZ, joint.maxX, joint.maxY, joint.maxZ, 1.0f, 0.8f, 0.1f, 0.9f);
                       }
-
-                      if (!PLACED_PITONS.isEmpty()) {
-                          for (int i = 0; i < PLACED_PITONS.size(); i++) {
-                              Vec3 piton = PLACED_PITONS.get(i);
-                              drawStylizedPitonAnchor(poseStack, builder, piton, u, v, n);
-
-                              if (i > 0) {
-                                  drawRopeSegments(poseStack, builder, PLACED_PITONS.get(i - 1), piton, false);
-                              }
-                          }
-                          Vec3 lastPiton = PLACED_PITONS.get(PLACED_PITONS.size() - 1);
-                          Vec3 playerWaist = player.getPosition(pt).add(0, 0.85, 0);
-                          drawRopeSegments(poseStack, builder, lastPiton, playerWaist, hangingOnRope);
-                      }
-
-                      if (climbingActive || mantlingActive) {
-                          for (Limb limb : LIMBS) {
-                              if (mantlingActive && !limb.isHand) continue;
-
-                              Vec3 end = mantlingActive ? (limb.isLeft ? mantleLeftHandPos : mantleRightHandPos) : limb.getRenderPos(pt);
-                              Vec3 center = end.add(n.scale(0.018));
-
-                              float r, g, b;
-                              if (limb.fractured || limb.bleeding) {
-                                  r = 1.0f; g = 0.18f; b = 0.18f;
-                              } else if (limb.dislocated) {
-                                  r = 1.0f; g = 0.65f; b = 0.12f;
-                              } else if (!limb.locked) {
-                                  r = 0.65f; g = 0.72f; b = 0.78f;
-                              } else if (limb.isHand) {
-                                  r = 0.18f; g = 0.95f; b = 0.82f;
-                              } else {
-                                  r = 0.55f; g = 0.96f; b = 0.32f;
-                              }
-
-                              if (limb.isHand) {
-                                  drawStylizedHandGripMarker(poseStack, builder, center, u, v, r, g, b, limb, time);
-                              } else {
-                                  drawStylizedFootStepMarker(poseStack, builder, center, u, v, r, g, b, limb, time);
-                              }
-
-                              if (limb.moveProgress < 1.0f || limb.reaching) {
-                                  drawDashedTrajectory(poseStack, builder, limb.startPos.add(n.scale(0.02)), limb.targetPos.add(n.scale(0.02)), r, g, b);
-                              }
-                          }
-
-                          if (climbingActive) {
-                              drawWallAimReticle(poseStack, builder, player, u, v, n, time);
-                          }
-                      }
-
                       poseStack.popPose();
                       buffer.endBatch(RenderType.lines());
                   }
 
-                  private static void draw3DSummitFlagpole(PoseStack poseStack, VertexConsumer builder, Vec3 base, float time) {
-                      Vec3 poleTop = base.add(0, 1.85, 0);
-                      drawLine3D(poseStack, builder, base, poleTop, 0.85f, 0.88f, 0.92f, 1.0f);
-                      drawLine3D(poseStack, builder, base.add(-0.15, 0.02, 0), base.add(0.15, 0.02, 0), 0.7f, 0.75f, 0.8f, 1.0f);
-                      drawLine3D(poseStack, builder, base.add(0, 0.02, -0.15), base.add(0, 0.02, 0.15), 0.7f, 0.75f, 0.8f, 1.0f);
-
-                      Vec3 windDir = currentWind.lengthSqr() > 0.001 ? currentWind.normalize() : new Vec3(1, 0, 0.3).normalize();
-                      Vec3 sideOrtho = new Vec3(-windDir.z, 0, windDir.x).normalize();
-
-                      int clothSegs = 10;
-                      double flagLength = 0.85;
-                      double flagHeight = 0.48;
-
-                      Vec3 prevTop = poleTop.add(0, -0.05, 0);
-                      Vec3 prevBot = poleTop.add(0, -0.05 - flagHeight, 0);
-
-                      for (int s = 1; s <= clothSegs; s++) {
-                          double t = (double) s / clothSegs;
-                          double flutter = Math.sin(time * 0.45 - t * 4.2) * (0.08 * t);
-                          Vec3 curTop = poleTop.add(0, -0.05, 0)
-                                  .add(windDir.scale(t * flagLength))
-                                  .add(sideOrtho.scale(flutter));
-                          Vec3 curBot = curTop.add(0, -flagHeight + t * 0.08, 0);
-
-                          drawLine3D(poseStack, builder, prevTop, curTop, 1.0f, 0.82f, 0.18f, 1.0f);
-                          drawLine3D(poseStack, builder, prevBot, curBot, 1.0f, 0.82f, 0.18f, 1.0f);
-                          drawLine3D(poseStack, builder, curTop, curBot, 0.95f, 0.18f, 0.22f, 0.95f);
-
-                          prevTop = curTop;
-                          prevBot = curBot;
-                      }
-                  }
-
-                  private static void drawStylizedHandGripMarker(PoseStack poseStack, VertexConsumer builder, Vec3 c,
-                                                                 Vec3 u, Vec3 v, float r, float g, float b, Limb limb, float time) {
-                      float pulse = limb.reaching ? (float)(Math.sin(time * 0.8) * 0.015) : 0.0f;
-                      double s = 0.085 + pulse;
-                      double br = 0.036;
-
-                      drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(s)), c.add(u.scale(-s + br)).add(v.scale(s)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(s)), c.add(u.scale(-s)).add(v.scale(s - br)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(s)), c.add(u.scale(s - br)).add(v.scale(s)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(s)), c.add(u.scale(s)).add(v.scale(s - br)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(-s)), c.add(u.scale(-s + br)).add(v.scale(-s)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(-s)).add(v.scale(-s)), c.add(u.scale(-s)).add(v.scale(-s + br)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(-s)), c.add(u.scale(s - br)).add(v.scale(-s)), r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, c.add(u.scale(s)).add(v.scale(-s)), c.add(u.scale(s)).add(v.scale(-s + br)), r, g, b, 0.95f);
-
-                      int segs = 12;
-                      double ringRad = 0.042 * Mth.clamp(limb.getEffectiveness(), 0.4f, 1.0f);
-                      for (int i = 0; i < segs; i++) {
-                          double a1 = (i * 2.0 * Math.PI) / segs;
-                          double a2 = ((i + 1) * 2.0 * Math.PI) / segs;
-                          Vec3 p1 = c.add(u.scale(Math.cos(a1) * ringRad)).add(v.scale(Math.sin(a1) * ringRad));
-                          Vec3 p2 = c.add(u.scale(Math.cos(a2) * ringRad)).add(v.scale(Math.sin(a2) * ringRad));
-                          drawLine3D(poseStack, builder, p1, p2, r, g, b, 0.85f);
-                      }
-
-                      if (chalkLevel > 40.0f && limb.locked) {
-                          double chalkRad = 0.022;
-                          for (int i = 0; i < 6; i++) {
-                              double a1 = (i * 2.0 * Math.PI) / 6;
-                              double a2 = ((i + 1) * 2.0 * Math.PI) / 6;
-                              Vec3 p1 = c.add(u.scale(Math.cos(a1) * chalkRad)).add(v.scale(Math.sin(a1) * chalkRad));
-                              Vec3 p2 = c.add(u.scale(Math.cos(a2) * chalkRad)).add(v.scale(Math.sin(a2) * chalkRad));
-                              drawLine3D(poseStack, builder, p1, p2, 0.95f, 0.98f, 1.0f, 0.70f);
+                  @SubscribeEvent
+                  public static void onRenderHand(RenderHandEvent event) {
+                      if (climbingActive) {
+                          if (event.getItemStack().getItem() instanceof IceAxeItem) {
+                              PoseStack poseStack = event.getPoseStack();
+                              poseStack.translate(0.0, 0.2, -0.6);
+                              poseStack.mulPose(Axis.XP.rotationDegrees(-45f));
+                              float shake = (float) Math.sin(System.currentTimeMillis() / 40.0) * 0.005f;
+                              poseStack.translate(shake, shake, 0);
                           }
-                      }
-                  }
-
-                  private static void drawStylizedFootStepMarker(PoseStack poseStack, VertexConsumer builder, Vec3 c,
-                                                                 Vec3 u, Vec3 v, float r, float g, float b, Limb limb, float time) {
-                      double topW = 0.068;
-                      double botW = 0.048;
-                      double h = 0.042;
-
-                      Vec3 tl = c.add(u.scale(-topW)).add(v.scale(h));
-                      Vec3 tr = c.add(u.scale(topW)).add(v.scale(h));
-                      Vec3 br = c.add(u.scale(botW)).add(v.scale(-h));
-                      Vec3 bl = c.add(u.scale(-botW)).add(v.scale(-h));
-
-                      drawLine3D(poseStack, builder, tl, tr, r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, tr, br, r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, br, bl, r, g, b, 0.95f);
-                      drawLine3D(poseStack, builder, bl, tl, r, g, b, 0.95f);
-
-                      for (int t = -2; t <= 2; t++) {
-                          double tx = t * 0.022;
-                          Vec3 pTop = c.add(u.scale(tx)).add(v.scale(h * 0.55));
-                          Vec3 pBot = c.add(u.scale(tx * 0.8)).add(v.scale(-h * 0.55));
-                          drawLine3D(poseStack, builder, pTop, pBot, r, g, b, 0.65f);
-                      }
-                  }
-
-                  private static void drawStylizedPitonAnchor(PoseStack poseStack, VertexConsumer builder, Vec3 pos,
-                                                              Vec3 u, Vec3 v, Vec3 n) {
-                      Vec3 surface = pos.add(n.scale(0.015));
-                      Vec3 ringCenter = surface.add(n.scale(0.04)).add(v.scale(-0.03));
-
-                      drawLine3D(poseStack, builder, pos.subtract(n.scale(0.03)), ringCenter, 0.78f, 0.82f, 0.88f, 1.0f);
-                      drawLine3D(poseStack, builder, surface.add(u.scale(-0.04)), surface.add(u.scale(0.04)), 0.78f, 0.82f, 0.88f, 1.0f);
-
-                      int segs = 10;
-                      double rad = 0.045;
-                      for (int i = 0; i < segs; i++) {
-                          double a1 = (i * 2.0 * Math.PI) / segs;
-                          double a2 = ((i + 1) * 2.0 * Math.PI) / segs;
-                          Vec3 p1 = ringCenter.add(u.scale(Math.cos(a1) * rad)).add(v.scale(Math.sin(a1) * rad));
-                          Vec3 p2 = ringCenter.add(u.scale(Math.cos(a2) * rad)).add(v.scale(Math.sin(a2) * rad));
-                          drawLine3D(poseStack, builder, p1, p2, 0.98f, 0.62f, 0.15f, 1.0f);
-                      }
-                  }
-
-                  private static void drawWallAimReticle(PoseStack poseStack, VertexConsumer builder, Player player,
-                                                         Vec3 u, Vec3 v, Vec3 n, float time) {
-                      Vec3 eye = player.getEyePosition(1.0f);
-                      Vec3 reach = eye.add(player.getLookAngle().scale(2.1));
-                      BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-
-                      if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
-                          Vec3 p = hit.getLocation().add(n.scale(0.02));
-                          double d = 0.032 + Math.sin(time * 0.25) * 0.005;
-                          Vec3 top = p.add(v.scale(d));
-                          Vec3 bot = p.add(v.scale(-d));
-                          Vec3 left = p.add(u.scale(-d));
-                          Vec3 right = p.add(u.scale(d));
-                          drawLine3D(poseStack, builder, top, right, 0.85f, 0.95f, 1.0f, 0.55f);
-                          drawLine3D(poseStack, builder, right, bot, 0.85f, 0.95f, 1.0f, 0.55f);
-                          drawLine3D(poseStack, builder, bot, left, 0.85f, 0.95f, 1.0f, 0.55f);
-                          drawLine3D(poseStack, builder, left, top, 0.85f, 0.95f, 1.0f, 0.55f);
-                      }
-                  }
-
-                  private static void drawDashedTrajectory(PoseStack poseStack, VertexConsumer builder, Vec3 from, Vec3 to,
-                                                           float r, float g, float b) {
-                      int dashes = 6;
-                      for (int i = 0; i < dashes; i++) {
-                          double t1 = (double) i / dashes;
-                          double t2 = (i + 0.55) / dashes;
-                          Vec3 p1 = from.lerp(to, t1);
-                          Vec3 p2 = from.lerp(to, t2);
-                          drawLine3D(poseStack, builder, p1, p2, r, g, b, 0.65f);
-                      }
-                  }
-
-                  private static void drawLine3D(PoseStack poseStack, VertexConsumer builder, Vec3 a, Vec3 b,
-                                                 float r, float g, float bl, float alpha) {
-                      Matrix4f mat = poseStack.last().pose();
-                      Vec3 diff = b.subtract(a);
-                      Vec3 norm = diff.lengthSqr() > 1.0E-6 ? diff.normalize() : new Vec3(0, 1, 0);
-                      builder.vertex(mat, (float) a.x, (float) a.y, (float) a.z).color(r, g, bl, alpha).normal((float) norm.x, (float) norm.y, (float) norm.z).endVertex();
-                      builder.vertex(mat, (float) b.x, (float) b.y, (float) b.z).color(r, g, bl, alpha).normal((float) norm.x, (float) norm.y, (float) norm.z).endVertex();
-                  }
-
-                  private static void drawRopeSegments(PoseStack poseStack, VertexConsumer builder, Vec3 from, Vec3 to, boolean taut) {
-                      int steps = 16;
-                      Vec3 prev = from;
-                      for (int s = 1; s <= steps; s++) {
-                          double t = (double) s / steps;
-                          Vec3 pt = from.lerp(to, t);
-                          if (!taut) {
-                              double sag = Math.sin(t * Math.PI) * 0.28;
-                              pt = pt.add(0, -sag, 0);
-                          }
-                          float r = taut ? 1.0f : 0.92f;
-                          float g = taut ? 0.25f : 0.68f;
-                          float b = 0.22f;
-                          drawLine3D(poseStack, builder, prev, pt, r, g, b, 0.95f);
-                          drawLine3D(poseStack, builder, prev.add(0.012, 0.012, 0), pt.add(0.012, 0.012, 0), r * 0.75f, g * 0.75f, b * 0.75f, 0.85f);
-                          prev = pt;
                       }
                   }
               }
           }
           EOF
 
-          gradle build --no-daemon --stacktrace
+          # 4. Создаем 3D-модель ледоруба (.json)
+          cat << 'EOF' > src/main/resources/assets/realisticclimbing/models/item/ice_axe.json
+          {
+            "parent": "minecraft:item/generated",
+            "textures": {
+              "layer0": "realisticclimbing:item/ice_axe"
+            },
+            "display": {
+              "thirdperson_righthand": {
+                "rotation": [0, -90, 55],
+                "translation": [0, 4.0, 0.5],
+                "scale": [0.85, 0.85, 0.85]
+              },
+              "thirdperson_lefthand": {
+                "rotation": [0, 90, -55],
+                "translation": [0, 4.0, 0.5],
+                "scale": [0.85, 0.85, 0.85]
+              },
+              "firstperson_righthand": {
+                "rotation": [0, -90, 25],
+                "translation": [1.13, 3.2, 1.13],
+                "scale": [0.68, 0.68, 0.68]
+              },
+              "firstperson_lefthand": {
+                "rotation": [0, 90, -25],
+                "translation": [1.13, 3.2, 1.13],
+                "scale": [0.68, 0.68, 0.68]
+              }
+            }
+          }
+          EOF
 
-      - name: Upload Compiled JAR
-        uses: actions/upload-artifact@v4
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build with Gradle
+        run: ./gradlew build
+
+      - name: Upload Mod Jar
+        uses: actions/upload-artifact@v3
         with:
-          name: RealisticClimbing-v2.0-FINAL
-          path: mod_build/build/libs/*.jar
+          name: ClimbingMod-Update
+          path: build/libs/*.jar
