@@ -30,9 +30,18 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.lwjgl.glfw.GLFW;
+import net.minecraftforge.registries.DeferredRegister;
+import net.minecraftforge.registries.ForgeRegistries;
+import net.minecraftforge.registries.RegistryObject;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraftforge.client.event.RenderHandEvent;
+import com.mojang.math.Axis;
 
 @Mod("realisticclimbing")
 public class RealisticClimbingMod {
+    public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, "realisticclimbing");
+    public static final RegistryObject<Item> ICE_AXE = ITEMS.register("ice_axe", () -> new IceAxeItem(new Item.Properties()));
     public static final String MOD_ID = "realisticclimbing";
 
     public static KeyMapping KEY_TOGGLE_CLIMB;
@@ -70,6 +79,7 @@ public class RealisticClimbingMod {
     };
 
     public RealisticClimbingMod() {
+        ITEMS.register(FMLJavaModLoadingContext.get().getModEventBus());
         if (FMLEnvironment.dist == Dist.CLIENT) {
             FMLJavaModLoadingContext.get().getModEventBus().addListener(ClientEvents::registerKeys);
             MinecraftForge.EVENT_BUS.register(ClientEvents.class);
@@ -121,13 +131,23 @@ public class RealisticClimbingMod {
             handleLimbInput(player, 2, KEY_LEFT_FOOT);
             handleLimbInput(player, 3, KEY_RIGHT_FOOT);
 
+            // Обработка интерполяции позиций
+            Vec3[] currentPositions = new Vec3[4];
+            for (int i = 0; i < 4; i++) {
+                LIMBS[i].currentPos = LIMBS[i].currentPos.lerp(LIMBS[i].targetPos, 0.35);
+                currentPositions[i] = LIMBS[i].currentPos;
+            }
+
+            // ПРИМЕНЕНИЕ КОЛЛИЗИИ КОНЕЧНОСТЕЙ (чтобы не проходили сквозь друг друга)
+            currentPositions = LimbCollision.resolveCollisions(currentPositions);
+            
             int lockedCount = 0;
             int handsLocked = 0;
             Vec3 centerOfSupport = Vec3.ZERO;
 
             for (int i = 0; i < 4; i++) {
                 Limb limb = LIMBS[i];
-                limb.currentPos = limb.currentPos.lerp(limb.targetPos, 0.35);
+                limb.currentPos = currentPositions[i]; // Возвращаем позиции после коллизии
 
                 Vec3 rootPos = getJointRoot(player, limb);
                 limb.elbowOrKneePos = solveTwoBoneIK(rootPos, limb.currentPos, limb.isHand, limb.isLeft);
@@ -189,6 +209,18 @@ public class RealisticClimbingMod {
                 BlockHitResult hit = player.level().clip(new ClipContext(eye, reach, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
 
                 if (hit.getType() == HitResult.Type.BLOCK && hit.getDirection() != Direction.DOWN) {
+                    
+                    // ПРОВЕРКА ЛЕДОРУБА
+                    if (limb.isHand) {
+                        ItemStack mainItem = player.getMainHandItem();
+                        ItemStack offItem = player.getOffhandItem();
+                        if (mainItem.getItem() instanceof IceAxeItem || offItem.getItem() instanceof IceAxeItem) {
+                            if (!IceAxeItem.canGripSurface(player.level(), hit.getBlockPos())) {
+                                return; // Ледоруб соскальзывает с песка/земли
+                            }
+                        }
+                    }
+
                     Vec3 gripPoint = hit.getLocation();
                     Vec3 root = getJointRoot(player, limb);
                     if (root.distanceTo(gripPoint) <= 1.55) {
@@ -294,6 +326,20 @@ public class RealisticClimbingMod {
 
             poseStack.popPose();
             buffer.endBatch(RenderType.lines());
+        }
+
+        // АНИМАЦИЯ ЛЕДОРУБА ОТ ПЕРВОГО ЛИЦА
+        @SubscribeEvent
+        public static void onRenderHand(RenderHandEvent event) {
+            if (climbingActive) {
+                if (event.getItemStack().getItem() instanceof IceAxeItem) {
+                    PoseStack poseStack = event.getPoseStack();
+                    poseStack.translate(0.0, 0.2, -0.6);
+                    poseStack.mulPose(Axis.XP.rotationDegrees(-45f));
+                    float shake = (float) Math.sin(System.currentTimeMillis() / 40.0) * 0.005f;
+                    poseStack.translate(shake, shake, 0);
+                }
+            }
         }
     }
 }
